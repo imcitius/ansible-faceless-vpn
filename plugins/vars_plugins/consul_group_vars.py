@@ -11,10 +11,10 @@ from ansible.plugins.vars import BaseVarsPlugin
 from ansible.inventory.host import Host
 from ansible.inventory.group import Group
 from ansible.utils.vars import combine_vars
-from ansible.plugins.vars.host_group_vars import VarsModule as HostGroupVarsModule
 import requests
 import base64
 import yaml
+CACHE = {}
 
 class VarsModule(BaseVarsPlugin):
 
@@ -27,7 +27,10 @@ class VarsModule(BaseVarsPlugin):
         result = {}
 
         def kv_get(url):
-            # print('getting url:', url)
+#            print('getting url:', url)
+            if url in CACHE:
+#                print('getting CACHED url:', url)
+                return CACHE[url]
             try:
                 r = requests.get(url)
                 # print(r)
@@ -36,7 +39,6 @@ class VarsModule(BaseVarsPlugin):
                 parsed = r.json()
                 if not isinstance(parsed, list):
                     raise ValueError('Incorrect json: ' + r.content)
-                
                 def build_tree(branch, v):
                     key = key_parts.pop(0)
                     if key not in result:
@@ -58,6 +60,7 @@ class VarsModule(BaseVarsPlugin):
                     build_tree(result, value)
             except BaseException as e:
                 raise AnsibleError('Error getting vars: %s' % to_native(e))
+            CACHE[url] = result
             return result
 
         for entity in entities:
