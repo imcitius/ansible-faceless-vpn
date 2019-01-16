@@ -36,7 +36,7 @@ class VarsModule(BaseVarsPlugin):
                 parsed = r.json()
                 if not isinstance(parsed, list):
                     raise ValueError('Incorrect json: ' + r.content)
-                
+
                 def build_tree(branch, v):
                     key = key_parts.pop(0)
                     if key not in result:
@@ -60,7 +60,7 @@ class VarsModule(BaseVarsPlugin):
             return result
 
         for entity in entities:
-            if entity.name is 'all':
+            if entity.name == 'all':
                 # print('group name is', entity.name )
                 # print('entity dict is', entity.__dict__ )
                 # print('group vars is', entity.vars )
