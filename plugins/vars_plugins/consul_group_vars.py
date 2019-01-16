@@ -39,10 +39,6 @@ class VarsModule(BaseVarsPlugin):
                 parsed = r.json()
                 if not isinstance(parsed, list):
                     raise ValueError('Incorrect json: ' + r.content)
-<<<<<<< HEAD
-
-=======
->>>>>>> 39f2dfa65dfe237e665dd16657b25ebd9c560c53
                 def build_tree(branch, v):
                     key = key_parts.pop(0)
                     if key not in result:
