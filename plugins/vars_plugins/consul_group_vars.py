@@ -43,7 +43,8 @@ class VarsModule(BaseVarsPlugin):
                         if len(key_parts) == 0:
                             branch[key] = v
                         else:
-                            branch[key] = dict()
+                            if key not in branch:
+                                branch[key] = dict()
                             build_tree(branch[key], v)
                     else:
                         build_tree(branch[key], v)
