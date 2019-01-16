@@ -1,0 +1,8 @@
+roles/*.role
+/.idea/
+*.retry
+files
+deploy_rsa_key
+__pycache__
+*.pyc
+all_consul
