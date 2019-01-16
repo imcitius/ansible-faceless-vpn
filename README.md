@@ -13,7 +13,9 @@ git remote add skeleton git@jgit.me:ansible/ansible-project-skeleton.git
 git pull skeleton master --allow-unrelated-histories
 
 далее смотрим на какие файлы гит скажет о наличии конфликтов, правим конфликты.
-скорее всего это будут файлы ansible.cfg и requirements.yml
 
 Ну и как обычно коммитим обновленный код в свой проект:
 git add --all . ; git commit -a -m "update from upstream skeleton"; git push
+
+Пример файла requirements.yml тут:
+https://jgit.me/ansible/ansible-project-skeleton/snippets/27
