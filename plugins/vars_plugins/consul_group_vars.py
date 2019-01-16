@@ -15,6 +15,7 @@ import requests
 import base64
 import yaml
 CACHE = {}
+PROJECT = {}
 
 class VarsModule(BaseVarsPlugin):
 
@@ -25,6 +26,7 @@ class VarsModule(BaseVarsPlugin):
         project_common_data = {}
         group_data = {}
         result = {}
+        project = ''
 
         def kv_get(url):
 #            print('getting url:', url)
@@ -73,6 +75,11 @@ class VarsModule(BaseVarsPlugin):
                 common_data=kv_get(url)
                 # print('common data:', common_data)
                 data=combine_vars(common_data, entity.vars)
+                if entity.vars['project']:
+                    if project in PROJECT:
+                        project = PROJECT[project]
+                    else:
+                        PROJECT[project]=entity.vars['project']
 
             elif isinstance(entity, Group):
                 # print('group name is', entity.name )
@@ -83,12 +90,12 @@ class VarsModule(BaseVarsPlugin):
                 common_group_data=kv_get(url)
                 # print('common group data:', common_group_data)
 
-                _path = 'inventory-json/' + entity.vars['project'] + '/common'
+                _path = 'inventory-json/' + PROJECT[project] + '/common'
                 url = 'http://consul.service.infra1.consul:8500/v1/kv/'+_path+'?recurse'
                 project_common_data=kv_get(url)
                 # print('common project data:', project_common_data)
 
-                _path = 'inventory-json/' + entity.vars['project'] + '/' + entity.name
+                _path = 'inventory-json/' + PROJECT[project] + '/' + entity.name
                 url = 'http://consul.service.infra1.consul:8500/v1/kv/'+_path+'?recurse'
                 group_data=kv_get(url)
                 # print('project group data:', group_data)
