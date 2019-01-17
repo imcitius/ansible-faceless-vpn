@@ -41,17 +41,20 @@ class VarsModule(BaseVarsPlugin):
                 parsed = r.json()
                 if not isinstance(parsed, list):
                     raise ValueError('Incorrect json: ' + r.content)
-                def build_tree(branch, v):
-                    key = key_parts.pop(0)
+                def build_tree(branch, v, parts):
+                    # print(parts)
+                    if len(key_parts)==0:
+                        return
+                    key = parts.pop(0)
                     if key not in result:
-                        if len(key_parts) == 0:
+                        if len(parts) == 0:
                             branch[key] = v
                         else:
                             if key not in branch:
                                 branch[key] = dict()
-                            build_tree(branch[key], v)
+                            build_tree(branch[key], v, parts)
                     else:
-                        build_tree(branch[key], v)
+                        build_tree(branch[key], v, parts)
                 for item in parsed:
                     fullkey = item['Key']
                     if not fullkey.startswith(_path):
@@ -59,7 +62,8 @@ class VarsModule(BaseVarsPlugin):
                     no_prefix_key = fullkey[len(_path):]
                     key_parts = [p for p in no_prefix_key.split('/') if p]
                     value = base64.b64decode(item['Value']).decode("utf-8") if item['Value'] else None
-                    build_tree(result, value)
+                    # print('result: ', result, 'value: ', value, 'key_parts: ', key_parts)
+                    build_tree(result, value, key_parts)
             except BaseException as e:
                 raise AnsibleError('Error getting vars: %s' % to_native(e))
             CACHE[url] = result
@@ -82,9 +86,9 @@ class VarsModule(BaseVarsPlugin):
                         PROJECT[project]=entity.vars['project']
 
             elif isinstance(entity, Group):
-                # print('group name is', entity.name )
-                # print('entity dict is', entity.__dict__ )
-                # print('group vars is', entity.vars )
+                print('group name is', entity.name )
+                print('entity dict is', entity.__dict__ )
+                print('group vars is', entity.vars )
                 _path = 'inventory-json/' + entity.name
                 url = 'http://consul.service.infra1.consul:8500/v1/kv/'+_path+'?recurse'
                 common_group_data=kv_get(url)
