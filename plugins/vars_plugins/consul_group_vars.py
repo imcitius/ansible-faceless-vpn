@@ -86,9 +86,9 @@ class VarsModule(BaseVarsPlugin):
                         PROJECT[project]=entity.vars['project']
 
             elif isinstance(entity, Group):
-                print('group name is', entity.name )
-                print('entity dict is', entity.__dict__ )
-                print('group vars is', entity.vars )
+                # print('group name is', entity.name )
+                # print('entity dict is', entity.__dict__ )
+                # print('group vars is', entity.vars )
                 _path = 'inventory-json/' + entity.name
                 url = 'http://consul.service.infra1.consul:8500/v1/kv/'+_path+'?recurse'
                 common_group_data=kv_get(url)
