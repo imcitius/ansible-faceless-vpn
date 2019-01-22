@@ -6,3 +6,5 @@ deploy_rsa_key
 __pycache__
 *.pyc
 all_consul
+group_vars/all
+inventory.json
