@@ -10,7 +10,7 @@ stages:
 
 build archive:
   <<: *docker_europe_tags
-  image: docker-local.jgit.me/infrastructure-images-ansible
+  image: harbor.jgit.me/library/ansible
   stage: artifact
   script:
    - echo tag=${CI_COMMIT_TAG} pipe=${CI_PIPELINE_ID}
