@@ -10,7 +10,7 @@ vm_prefix = [
     'vsphere_virtual_machine.host'
 ]
 
-project = os.environ('ANSIBLE_PROJECT')
+project = os.environ['ANSIBLE_PROJECT']
 
 
 def _init_inventory():
