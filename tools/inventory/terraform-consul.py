@@ -3,7 +3,7 @@ import base64
 import os
 import sys
 import json
-
+from collections import OrderedDict
 import requests
 
 vm_prefix = [
@@ -14,7 +14,7 @@ project = os.environ['ANSIBLE_PROJECT']
 
 
 def _init_inventory():
-    return {
+    return OrderedDict({
         "all": {
             "hosts": [],
             "vars": {
@@ -25,7 +25,7 @@ def _init_inventory():
         "_meta": {
             "hostvars": {}
         }
-    }
+    })
 
 
 def is_vm(name):
