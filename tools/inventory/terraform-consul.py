@@ -1,5 +1,6 @@
 #! /usr/bin/env python2
 import base64
+import os
 import sys
 import json
 
@@ -9,18 +10,18 @@ vm_prefix = [
     'vsphere_virtual_machine.host'
 ]
 
-
-def _init_group(children=None, hosts=None, vars=None):
-    return {
-        "hosts": [] if hosts is None else hosts,
-        "vars": {"project":"forex-prod"} if vars is None else vars,
-        "children": [] if children is None else children
-    }
+project = os.environ('ANSIBLE_PROJECT')
 
 
 def _init_inventory():
     return {
-        "all": _init_group(),
+        "all": {
+            "hosts": [],
+            "vars": {
+                'project': project
+            },
+            "children": []
+        },
         "_meta": {
             "hostvars": {}
         }
@@ -41,11 +42,13 @@ def _processing(tfstate, inventory):
                 continue
             attrs = resource["primary"]["attributes"]
 
-            group_name = attrs['name'].split('-')[0]
+            group_name = '-'.join(attrs['name'].split('-')[:-1])
+
             if group_name not in inventory:
                 inventory[group_name] = {
                     'hosts': []
                 }
+                inventory['all']['children'].append(group_name)
 
             host = attrs['guest_ip_addresses.0']
             inventory[group_name]['hosts'].append(host)
@@ -56,7 +59,7 @@ def _processing(tfstate, inventory):
 
 
 def get_tfstate():
-    url = 'http://consul.service.infra1.consul:8500/v1/kv/tf/states/cluster-env%3Aforex-prod'
+    url = 'http://consul.service.infra1.consul:8500/v1/kv/tf/states/cluster-env%3A' + project
     r = requests.get(url)
     return json.loads(base64.b64decode(r.json()[0]['Value']), encoding='utf-8')
 
