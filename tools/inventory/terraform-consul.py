@@ -35,26 +35,60 @@ def is_vm(name):
     return False
 
 
+def _get_outputs(current_module, modules):
+    if len(current_module['path']) == 1:
+        return None
+
+    if len(current_module['outputs']) != 0:
+        return current_module['outputs']
+
+    path = current_module['path']
+    parent_path = path[:-1]
+
+    parent = None
+    for module in modules:
+        if module['path'] == parent_path:
+            parent = module
+
+    return _get_outputs(parent, modules)
+
+
 def _processing(tfstate, inventory):
-    for module in tfstate["modules"]:
+    modules = tfstate["modules"]
+    for module in modules:
+        if len(module['path']) == 1:
+            continue
+
+        outputs = _get_outputs(module, modules)
+        group_values = outputs['meta']['value']
+
+        group_name = group_values['group']
+
         for name, resource in module["resources"].iteritems():
             if not is_vm(name):
                 continue
-            attrs = resource["primary"]["attributes"]
-
-            group_name = '-'.join(attrs['name'].split('-')[:-1])
 
             if group_name not in inventory:
+                group_values_without_group_name = dict(group_values)
+                del group_values_without_group_name['group']
                 inventory[group_name] = {
-                    'hosts': []
+                    'hosts': [],
+                    'vars': group_values_without_group_name,
+                    'children': []
                 }
                 inventory['all']['children'].append(group_name)
+
+            attrs = resource["primary"]["attributes"]
 
             host = attrs['guest_ip_addresses.0']
             inventory[group_name]['hosts'].append(host)
             inventory['_meta']['hostvars'][host] = dict()
+<<<<<<< HEAD
             inventory['_meta']['hostvars'][host]['hostname'] = attrs['name']
 
+=======
+            inventory['_meta']['hostvars'][host]['name'] = attrs['name']
+>>>>>>> dyn-inventory-consul
     return inventory
 
 
@@ -67,6 +101,7 @@ def get_tfstate():
 try:
     tfstate = get_tfstate()
     inventory = _processing(tfstate, _init_inventory())
+
     sys.stdout.write(json.dumps(inventory, indent=2))
 except Exception as e:
     sys.stderr.write(str(e)+'\n')

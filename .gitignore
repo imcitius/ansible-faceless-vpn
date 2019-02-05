@@ -8,3 +8,4 @@ __pycache__
 all_consul
 group_vars/all
 inventory.json
+env
