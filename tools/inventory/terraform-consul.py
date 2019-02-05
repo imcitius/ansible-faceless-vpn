@@ -35,23 +35,45 @@ def is_vm(name):
     return False
 
 
+def _get_outputs(current_module, modules):
+    if len(current_module['path']) == 1:
+        return None
+
+    if len(current_module['outputs']) != 0:
+        return current_module['outputs']
+
+    path = current_module['path']
+    parent_path = path[:-1]
+
+    parent = None
+    for module in modules:
+        if module['path'] == parent_path:
+            parent = module
+
+    return _get_outputs(parent, modules)
+
+
 def _processing(tfstate, inventory):
-    for module in tfstate["modules"]:
-        if len(module['outputs']) == 0:
+    modules = tfstate["modules"]
+    for module in modules:
+        if len(module['path']) == 1:
             continue
 
-        group_values = module['outputs']['meta']['value']
+        outputs = _get_outputs(module, modules)
+        group_values = outputs['meta']['value']
 
-        group_name = group_values.pop('group')
+        group_name = group_values['group']
 
         for name, resource in module["resources"].iteritems():
             if not is_vm(name):
                 continue
 
             if group_name not in inventory:
+                group_values_without_group_name = dict(group_values)
+                del group_values_without_group_name['group']
                 inventory[group_name] = {
                     'hosts': [],
-                    'vars': group_values,
+                    'vars': group_values_without_group_name,
                     'children': []
                 }
                 inventory['all']['children'].append(group_name)
@@ -62,7 +84,6 @@ def _processing(tfstate, inventory):
             inventory[group_name]['hosts'].append(host)
             inventory['_meta']['hostvars'][host] = dict()
             inventory['_meta']['hostvars'][host]['name'] = attrs['name']
-
     return inventory
 
 
@@ -75,6 +96,7 @@ def get_tfstate():
 try:
     tfstate = get_tfstate()
     inventory = _processing(tfstate, _init_inventory())
+
     sys.stdout.write(json.dumps(inventory, indent=2))
 except Exception as e:
     sys.stderr.write(str(e)+'\n')
