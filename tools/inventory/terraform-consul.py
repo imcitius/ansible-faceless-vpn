@@ -37,18 +37,26 @@ def is_vm(name):
 
 def _processing(tfstate, inventory):
     for module in tfstate["modules"]:
+        if len(module['outputs']) == 0:
+            continue
+
+        group_values = module['outputs']['meta']['value']
+
+        group_name = group_values.pop('group')
+
         for name, resource in module["resources"].iteritems():
             if not is_vm(name):
                 continue
-            attrs = resource["primary"]["attributes"]
-
-            group_name = '-'.join(attrs['name'].split('-')[:-1])
 
             if group_name not in inventory:
                 inventory[group_name] = {
-                    'hosts': []
+                    'hosts': [],
+                    'vars': group_values,
+                    'children': []
                 }
                 inventory['all']['children'].append(group_name)
+
+            attrs = resource["primary"]["attributes"]
 
             host = attrs['guest_ip_addresses.0']
             inventory[group_name]['hosts'].append(host)
