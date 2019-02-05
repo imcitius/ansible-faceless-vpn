@@ -83,12 +83,7 @@ def _processing(tfstate, inventory):
             host = attrs['guest_ip_addresses.0']
             inventory[group_name]['hosts'].append(host)
             inventory['_meta']['hostvars'][host] = dict()
-<<<<<<< HEAD
             inventory['_meta']['hostvars'][host]['hostname'] = attrs['name']
-
-=======
-            inventory['_meta']['hostvars'][host]['name'] = attrs['name']
->>>>>>> dyn-inventory-consul
     return inventory
 
 
