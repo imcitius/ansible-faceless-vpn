@@ -13,7 +13,7 @@ vm_prefix = [
 tf_state_path = os.environ['TF_STATE_PATH']
 project = os.environ['ANSIBLE_PROJECT']
 
-if tf_state_path == '' or ansible_project == '':
+if tf_state_path == '' or project == '':
   sys.stderr.write('TF state path or ansible project name not specified\n')
   sys.exit(1)
 
