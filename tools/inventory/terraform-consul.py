@@ -92,7 +92,7 @@ def _processing(tfstate, inventory):
 
 
 def get_tfstate():
-    url = 'http://consul.service.infra1.consul:8500/v1/kv/' + tf_state_path + ansible_project
+    url = 'http://consul.service.infra1.consul:8500/v1/kv/' + tf_state_path + '%3A' + ansible_project
     r = requests.get(url)
     return json.loads(base64.b64decode(r.json()[0]['Value']), encoding='utf-8')
 
