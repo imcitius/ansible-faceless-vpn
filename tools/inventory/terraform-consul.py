@@ -10,7 +10,7 @@ vm_prefix = [
     'vsphere_virtual_machine.host'
 ]
 
-project = os.environ['ANSIBLE_PROJECT']
+tf_state_path = os.environ['TF_STATE_PATH']
 
 
 def _init_inventory():
@@ -88,7 +88,7 @@ def _processing(tfstate, inventory):
 
 
 def get_tfstate():
-    url = 'http://consul.service.infra1.consul:8500/v1/kv/tf/states/cluster-env%3A' + project
+    url = 'http://consul.service.infra1.consul:8500/v1/kv/tf/states/' + tf_state_path
     r = requests.get(url)
     return json.loads(base64.b64decode(r.json()[0]['Value']), encoding='utf-8')
 
