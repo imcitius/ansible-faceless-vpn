@@ -11,7 +11,11 @@ vm_prefix = [
 ]
 
 tf_state_path = os.environ['TF_STATE_PATH']
+ansible_project = os.environ['ANSIBLE_PROJECT']
 
+if tf_state_path == '' or ansible_project == '':
+  sys.stderr.write('TF state path or ansible project name not specified\n')
+  sys.exit(1)
 
 def _init_inventory():
     return OrderedDict({
@@ -88,7 +92,7 @@ def _processing(tfstate, inventory):
 
 
 def get_tfstate():
-    url = 'http://consul.service.infra1.consul:8500/v1/kv/tf/states/' + tf_state_path
+    url = 'http://consul.service.infra1.consul:8500/v1/kv/' + tf_state_path + ansible_project
     r = requests.get(url)
     return json.loads(base64.b64decode(r.json()[0]['Value']), encoding='utf-8')
 
