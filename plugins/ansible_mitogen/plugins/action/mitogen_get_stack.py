@@ -26,56 +26,29 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
-# !mitogen: minify_safe
+from __future__ import absolute_import
+from __future__ import unicode_literals
 
-import logging
+"""
+Fetch the connection configuration stack that would be used to connect to a
+target, without actually connecting to it.
+"""
 
-import mitogen.core
-import mitogen.parent
+import ansible_mitogen.connection
+
+from ansible.plugins.action import ActionBase
 
 
-LOG = logging.getLogger(__name__)
+class ActionModule(ActionBase):
+    def run(self, tmp=None, task_vars=None):
+        if not isinstance(self._connection,
+                          ansible_mitogen.connection.Connection):
+            return {
+                'skipped': True,
+            }
 
-
-class Stream(mitogen.parent.Stream):
-    child_is_immediate_subprocess = False
-
-    container = None
-    image = None
-    username = None
-    docker_path = 'docker'
-
-    # TODO: better way of capturing errors such as "No such container."
-    create_child_args = {
-        'merge_stdio': True
-    }
-
-    def construct(self, container=None, image=None,
-                  docker_path=None, username=None,
-                  **kwargs):
-        assert container or image
-        super(Stream, self).construct(**kwargs)
-        if container:
-            self.container = container
-        if image:
-            self.image = image
-        if docker_path:
-            self.docker_path = docker_path
-        if username:
-            self.username = username
-
-    def _get_name(self):
-        return u'docker.' + (self.container or self.image)
-
-    def get_boot_command(self):
-        args = ['--interactive']
-        if self.username:
-            args += ['--user=' + self.username]
-
-        bits = [self.docker_path]
-        if self.container:
-            bits += ['exec'] + args + [self.container]
-        elif self.image:
-            bits += ['run'] + args + ['--rm', self.image]
-
-        return bits + super(Stream, self).get_boot_command()
+        return {
+            'changed': True,
+            'result': self._connection._build_stack(),
+            '_ansible_verbose_always': True,
+        }

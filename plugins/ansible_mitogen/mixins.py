@@ -1,4 +1,4 @@
-# Copyright 2017, David Wilson
+# Copyright 2019, David Wilson
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
@@ -30,7 +30,6 @@ from __future__ import absolute_import
 import logging
 import os
 import pwd
-import shutil
 import traceback
 
 try:
@@ -156,7 +155,7 @@ class ActionModuleMixin(ansible.plugins.action.ActionBase):
         """
         LOG.debug('_remote_file_exists(%r)', path)
         return self._connection.get_chain().call(
-            os.path.exists,
+            ansible_mitogen.target.file_exists,
             mitogen.utils.cast(path)
         )
 
@@ -223,7 +222,7 @@ class ActionModuleMixin(ansible.plugins.action.ActionBase):
         """
         LOG.debug('_fixup_perms2(%r, remote_user=%r, execute=%r)',
                   remote_paths, remote_user, execute)
-        if execute and self._load_name not in self.FIXUP_PERMS_RED_HERRING:
+        if execute and self._task.action not in self.FIXUP_PERMS_RED_HERRING:
             return self._remote_chmod(remote_paths, mode='u+x')
         return self.COMMAND_RESULT.copy()
 
