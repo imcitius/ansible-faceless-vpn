@@ -68,7 +68,7 @@ def _processing(tfstate, inventory):
 
         group_name = group_values['group']
 
-        for name, resource in module["resources"].iteritems():
+        for name, resource in module["resources"].items():
             if not is_vm(name):
                 continue
 
