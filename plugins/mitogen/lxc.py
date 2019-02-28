@@ -1,4 +1,4 @@
-# Copyright 2019, David Wilson
+# Copyright 2017, David Wilson
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
@@ -26,8 +26,6 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
-# !mitogen: minify_safe
-
 import logging
 
 import mitogen.core
@@ -50,20 +48,15 @@ class Stream(mitogen.parent.Stream):
     container = None
     lxc_attach_path = 'lxc-attach'
 
-    eof_error_hint = (
-        'Note: many versions of LXC do not report program execution failure '
-        'meaningfully. Please check the host logs (/var/log) for more '
-        'information.'
-    )
-
     def construct(self, container, lxc_attach_path=None, **kwargs):
         super(Stream, self).construct(**kwargs)
         self.container = container
         if lxc_attach_path:
             self.lxc_attach_path = lxc_attach_path
 
-    def _get_name(self):
-        return u'lxc.' + self.container
+    def connect(self):
+        super(Stream, self).connect()
+        self.name = u'lxc.' + self.container
 
     def get_boot_command(self):
         bits = [

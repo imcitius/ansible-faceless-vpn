@@ -1,4 +1,4 @@
-# Copyright 2019, David Wilson
+# Copyright 2017, David Wilson
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
@@ -46,7 +46,6 @@ from ansible.executor import module_common
 import ansible.errors
 import ansible.module_utils
 import mitogen.core
-import mitogen.select
 
 import ansible_mitogen.loaders
 import ansible_mitogen.parsing
@@ -173,7 +172,7 @@ class BinaryPlanner(Planner):
         return module_common._is_binary(self._inv.module_source)
 
     def get_push_files(self):
-        return [mitogen.core.to_text(self._inv.module_path)]
+        return [self._inv.module_path]
 
     def get_kwargs(self, **kwargs):
         return super(BinaryPlanner, self).get_kwargs(
@@ -206,13 +205,15 @@ class ScriptPlanner(BinaryPlanner):
             involved here, the vanilla implementation uses it and that use is
             exploited in common playbooks.
         """
-        key = u'ansible_%s_interpreter' % os.path.basename(path).strip()
         try:
+            key = u'ansible_%s_interpreter' % os.path.basename(path).strip()
             template = self._inv.task_vars[key]
         except KeyError:
             return path
 
-        return mitogen.utils.cast(self._inv.templar.template(template))
+        return mitogen.utils.cast(
+            self._inv.templar.template(self._inv.task_vars[key])
+        )
 
     def _get_interpreter(self):
         path, arg = ansible_mitogen.parsing.parse_hashbang(
@@ -284,7 +285,7 @@ class NewStylePlanner(ScriptPlanner):
 
     def get_push_files(self):
         return super(NewStylePlanner, self).get_push_files() + [
-            mitogen.core.to_text(path)
+            path
             for fullname, path, is_pkg in self.get_module_map()['custom']
         ]
 
@@ -415,39 +416,28 @@ def _propagate_deps(invocation, planner, context):
 
 def _invoke_async_task(invocation, planner):
     job_id = '%016x' % random.randint(0, 2**64)
-    context = invocation.connection.spawn_isolated_child()
+    context = invocation.connection.create_fork_child()
     _propagate_deps(invocation, planner, context)
+    context.call_no_reply(
+        ansible_mitogen.target.run_module_async,
+        job_id=job_id,
+        timeout_secs=invocation.timeout_secs,
+        kwargs=planner.get_kwargs(),
+    )
 
-    with mitogen.core.Receiver(context.router) as started_recv:
-        call_recv = context.call_async(
-            ansible_mitogen.target.run_module_async,
-            job_id=job_id,
-            timeout_secs=invocation.timeout_secs,
-            started_sender=started_recv.to_sender(),
-            kwargs=planner.get_kwargs(),
-        )
-
-        # Wait for run_module_async() to crash, or for AsyncRunner to indicate
-        # the job file has been written.
-        for msg in mitogen.select.Select([started_recv, call_recv]):
-            if msg.receiver is call_recv:
-                # It can only be an exception.
-                raise msg.unpickle()
-            break
-
-        return {
-            'stdout': json.dumps({
-                # modules/utilities/logic/async_wrapper.py::_run_module().
-                'changed': True,
-                'started': 1,
-                'finished': 0,
-                'ansible_job_id': job_id,
-            })
-        }
+    return {
+        'stdout': json.dumps({
+            # modules/utilities/logic/async_wrapper.py::_run_module().
+            'changed': True,
+            'started': 1,
+            'finished': 0,
+            'ansible_job_id': job_id,
+        })
+    }
 
 
-def _invoke_isolated_task(invocation, planner):
-    context = invocation.connection.spawn_isolated_child()
+def _invoke_forked_task(invocation, planner):
+    context = invocation.connection.create_fork_child()
     _propagate_deps(invocation, planner, context)
     try:
         return context.call(
@@ -487,7 +477,7 @@ def invoke(invocation):
     if invocation.wrap_async:
         response = _invoke_async_task(invocation, planner)
     elif planner.should_fork():
-        response = _invoke_isolated_task(invocation, planner)
+        response = _invoke_forked_task(invocation, planner)
     else:
         _propagate_deps(invocation, planner, invocation.connection.context)
         response = invocation.connection.get_chain().call(

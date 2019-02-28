@@ -1,4 +1,4 @@
-# Copyright 2019, David Wilson
+# Copyright 2017, David Wilson
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
@@ -26,8 +26,6 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
-# !mitogen: minify_safe
-
 import grp
 import os
 import os.path
@@ -42,16 +40,6 @@ import mitogen.core
 import mitogen.select
 from mitogen.core import b
 from mitogen.core import LOG
-from mitogen.core import str_rpartition
-
-try:
-    all
-except NameError:
-    def all(it):
-        for elem in it:
-            if not elem:
-                return False
-        return True
 
 
 DEFAULT_POOL_SIZE = 16
@@ -64,13 +52,9 @@ _pool_lock = threading.Lock()
 if mitogen.core.PY3:
     def func_code(func):
         return func.__code__
-    def func_name(func):
-        return func.__name__
 else:
     def func_code(func):
         return func.func_code
-    def func_name(func):
-        return func.func_name
 
 
 @mitogen.core.takes_router
@@ -80,12 +64,7 @@ def get_or_create_pool(size=None, router=None):
     _pool_lock.acquire()
     try:
         if _pool_pid != os.getpid():
-            _pool = Pool(router, [], size=size or DEFAULT_POOL_SIZE,
-                         overwrite=True)
-            # In case of Broker shutdown crash, Pool can cause 'zombie'
-            # processes.
-            mitogen.core.listen(router.broker, 'shutdown',
-                                lambda: _pool.stop(join=False))
+            _pool = Pool(router, [], size=size or DEFAULT_POOL_SIZE)
             _pool_pid = os.getpid()
         return _pool
     finally:
@@ -208,7 +187,7 @@ class Activator(object):
     )
 
     def activate(self, pool, service_name, msg):
-        mod_name, _, class_name = str_rpartition(service_name, '.')
+        mod_name, _, class_name = service_name.rpartition('.')
         if msg and not self.is_permitted(mod_name, class_name, msg):
             raise mitogen.core.CallError(self.not_active_msg, service_name)
 
@@ -265,7 +244,7 @@ class Invoker(object):
             if no_reply:
                 LOG.exception('While calling no-reply method %s.%s',
                               type(self.service).__name__,
-                              func_name(method))
+                              method.func_name)
             else:
                 raise
 
@@ -416,13 +395,11 @@ class Service(object):
         Called when a message arrives on any of :attr:`select`'s registered
         receivers.
         """
-        pass
 
     def on_shutdown(self):
         """
         Called by Pool.shutdown() once the last worker thread has exitted.
         """
-        pass
 
 
 class Pool(object):
@@ -449,13 +426,12 @@ class Pool(object):
     """
     activator_class = Activator
 
-    def __init__(self, router, services, size=1, overwrite=False):
+    def __init__(self, router, services, size=1):
         self.router = router
         self._activator = self.activator_class()
         self._receiver = mitogen.core.Receiver(
             router=router,
             handle=mitogen.core.CALL_SERVICE,
-            overwrite=overwrite,
         )
 
         self._select = mitogen.select.Select(oneshot=False)
@@ -473,7 +449,7 @@ class Pool(object):
             thread = threading.Thread(
                 name=name,
                 target=mitogen.core._profile_hook,
-                args=('mitogen.service.pool', self._worker_main),
+                args=(name, self._worker_main),
             )
             thread.start()
             self._threads.append(thread)
@@ -497,7 +473,6 @@ class Pool(object):
 
     def stop(self, join=True):
         self.closed = True
-        self._receiver.close()
         self._select.close()
         if join:
             self.join()
@@ -558,7 +533,7 @@ class Pool(object):
                 msg = self._select.get()
             except (mitogen.core.ChannelError, mitogen.core.LatchError):
                 e = sys.exc_info()[1]
-                LOG.debug('%r: channel or latch closed, exitting: %s', self, e)
+                LOG.info('%r: channel or latch closed, exitting: %s', self, e)
                 return
 
             func = self._func_by_recv[msg.receiver]
@@ -572,7 +547,7 @@ class Pool(object):
             self._worker_run()
         except Exception:
             th = threading.currentThread()
-            LOG.exception('%r: worker %r crashed', self, th.getName())
+            LOG.exception('%r: worker %r crashed', self, th.name)
             raise
 
     def __repr__(self):
@@ -580,7 +555,7 @@ class Pool(object):
         return 'mitogen.service.Pool(%#x, size=%d, th=%r)' % (
             id(self),
             len(self._threads),
-            th.getName(),
+            th.name,
         )
 
 
@@ -603,6 +578,8 @@ class PushFileService(Service):
 
     This service will eventually be merged into FileService.
     """
+    invoker_class = SerializedInvoker
+
     def __init__(self, **kwargs):
         super(PushFileService, self).__init__(**kwargs)
         self._lock = threading.Lock()
@@ -611,16 +588,12 @@ class PushFileService(Service):
         self._sent_by_stream = {}
 
     def get(self, path):
-        """
-        Fetch a file from the cache.
-        """
-        assert isinstance(path, mitogen.core.UnicodeType)
         self._lock.acquire()
         try:
             if path in self._cache:
                 return self._cache[path]
-            latch = mitogen.core.Latch()
             waiters = self._waiters.setdefault(path, [])
+            latch = mitogen.core.Latch()
             waiters.append(lambda: latch.put(None))
         finally:
             self._lock.release()
@@ -634,14 +607,13 @@ class PushFileService(Service):
         stream = self.router.stream_by_id(context.context_id)
         child = mitogen.core.Context(self.router, stream.remote_id)
         sent = self._sent_by_stream.setdefault(stream, set())
-        if path in sent:
-            if child.context_id != context.context_id:
-                child.call_service_async(
-                    service_name=self.name(),
-                    method_name='forward',
-                    path=path,
-                    context=context
-                ).close()
+        if path in sent and child.context_id != context.context_id:
+            child.call_service_async(
+                service_name=self.name(),
+                method_name='forward',
+                path=path,
+                context=context
+            ).close()
         else:
             child.call_service_async(
                 service_name=self.name(),
@@ -650,7 +622,6 @@ class PushFileService(Service):
                 data=self._cache[path],
                 context=context
             ).close()
-            sent.add(path)
 
     @expose(policy=AllowParents())
     @arg_spec({
@@ -664,7 +635,7 @@ class PushFileService(Service):
         with a set of small files and Python modules.
         """
         for path in paths:
-            self.propagate_to(context, mitogen.core.to_text(path))
+            self.propagate_to(context, path)
         self.router.responder.forward_modules(context, modules)
 
     @expose(policy=AllowParents())
@@ -682,24 +653,25 @@ class PushFileService(Service):
                 fp.close()
         self._forward(context, path)
 
+    def _store(self, path, data):
+        self._lock.acquire()
+        try:
+            self._cache[path] = data
+            return self._waiters.pop(path, [])
+        finally:
+            self._lock.release()
+
     @expose(policy=AllowParents())
     @no_reply()
     @arg_spec({
-        'path': mitogen.core.UnicodeType,
+        'path': mitogen.core.FsPathTypes,
         'data': mitogen.core.Blob,
         'context': mitogen.core.Context,
     })
     def store_and_forward(self, path, data, context):
-        LOG.debug('%r.store_and_forward(%r, %r, %r) %r',
-                  self, path, data, context,
-                  threading.currentThread().getName())
-        self._lock.acquire()
-        try:
-            self._cache[path] = data
-            waiters = self._waiters.pop(path, [])
-        finally:
-            self._lock.release()
-
+        LOG.debug('%r.store_and_forward(%r, %r, %r)',
+                  self, path, data, context)
+        waiters = self._store(path, data)
         if context.context_id != mitogen.context_id:
             self._forward(context, path)
         for callback in waiters:
@@ -713,17 +685,10 @@ class PushFileService(Service):
     })
     def forward(self, path, context):
         LOG.debug('%r.forward(%r, %r)', self, path, context)
-        func = lambda: self._forward(context, path)
-
-        self._lock.acquire()
-        try:
-            if path in self._cache:
-                func()
-            else:
-                LOG.debug('%r: %r not cached yet, queueing', self, path)
-                self._waiters.setdefault(path, []).append(func)
-        finally:
-            self._lock.release()
+        if path not in self._cache:
+            LOG.error('%r: %r is not in local cache', self, path)
+            return
+        self._forward(path, context)
 
 
 class FileService(Service):
@@ -778,7 +743,7 @@ class FileService(Service):
            proceed normally, without the associated thread needing to be
            forcefully killed.
     """
-    unregistered_msg = 'Path %r is not registered with FileService.'
+    unregistered_msg = 'Path is not registered with FileService.'
     context_mismatch_msg = 'sender= kwarg context must match requestee context'
 
     #: Burst size. With 1MiB and 10ms RTT max throughput is 100MiB/sec, which
@@ -787,10 +752,8 @@ class FileService(Service):
 
     def __init__(self, router):
         super(FileService, self).__init__(router)
-        #: Set of registered paths.
-        self._paths = set()
-        #: Set of registered directory prefixes.
-        self._prefixes = set()
+        #: Mapping of registered path -> file size.
+        self._metadata_by_path = {}
         #: Mapping of Stream->FileStreamState.
         self._state_by_stream = {}
 
@@ -807,43 +770,26 @@ class FileService(Service):
     def register(self, path):
         """
         Authorize a path for access by children. Repeat calls with the same
-        path has no effect.
+        path is harmless.
 
         :param str path:
             File path.
         """
-        if path not in self._paths:
-            LOG.debug('%r: registering %r', self, path)
-            self._paths.add(path)
+        if path in self._metadata_by_path:
+            return
 
-    @expose(policy=AllowParents())
-    @arg_spec({
-        'path': mitogen.core.FsPathTypes,
-    })
-    def register_prefix(self, path):
-        """
-        Authorize a path and any subpaths for access by children. Repeat calls
-        with the same path has no effect.
-
-        :param str path:
-            File path.
-        """
-        if path not in self._prefixes:
-            LOG.debug('%r: registering prefix %r', self, path)
-            self._prefixes.add(path)
-
-    def _generate_stat(self, path):
         st = os.stat(path)
         if not stat.S_ISREG(st.st_mode):
             raise IOError('%r is not a regular file.' % (path,))
 
-        return {
-            u'size': st.st_size,
-            u'mode': st.st_mode,
-            u'owner': self._name_or_none(pwd.getpwuid, 0, 'pw_name'),
-            u'group': self._name_or_none(grp.getgrgid, 0, 'gr_name'),
-            u'mtime': float(st.st_mtime),  # Python 2.4 uses int.
-            u'atime': float(st.st_atime),  # Python 2.4 uses int.
+        LOG.debug('%r: registering %r', self, path)
+        self._metadata_by_path[path] = {
+            'size': st.st_size,
+            'mode': st.st_mode,
+            'owner': self._name_or_none(pwd.getpwuid, 0, 'pw_name'),
+            'group': self._name_or_none(grp.getgrgid, 0, 'gr_name'),
+            'mtime': st.st_mtime,
+            'atime': st.st_atime,
         }
 
     def on_shutdown(self):
@@ -895,24 +841,6 @@ class FileService(Service):
                 fp.close()
                 state.jobs.pop(0)
 
-    def _prefix_is_authorized(self, path):
-        """
-        Return the set of all possible directory prefixes for `path`.
-        :func:`os.path.abspath` is used to ensure the path is absolute.
-
-        :param str path:
-            The path.
-        :returns: Set of prefixes.
-        """
-        path = os.path.abspath(path)
-        while True:
-            if path in self._prefixes:
-                return True
-            if path == '/':
-                break
-            path = os.path.dirname(path)
-        return False
-
     @expose(policy=AllowAny())
     @no_reply()
     @arg_spec({
@@ -939,32 +867,25 @@ class FileService(Service):
         :raises Error:
             Unregistered path, or Sender did not match requestee context.
         """
-        if path not in self._paths and not self._prefix_is_authorized(path):
-            msg.reply(mitogen.core.CallError(
-                Error(self.unregistered_msg % (path,))
-            ))
-            return
-
+        if path not in self._metadata_by_path:
+            raise Error(self.unregistered_msg)
         if msg.src_id != sender.context.context_id:
-            msg.reply(mitogen.core.CallError(
-                Error(self.context_mismatch_msg)
-            ))
-            return
+            raise Error(self.context_mismatch_msg)
 
         LOG.debug('Serving %r', path)
-
-        # Response must arrive first so requestee can begin receive loop,
-        # otherwise first ack won't arrive until all pending chunks were
-        # delivered. In that case max BDP would always be 128KiB, aka. max
-        # ~10Mbit/sec over a 100ms link.
         try:
             fp = open(path, 'rb', self.IO_SIZE)
-            msg.reply(self._generate_stat(path))
         except IOError:
             msg.reply(mitogen.core.CallError(
                 sys.exc_info()[1]
             ))
             return
+
+        # Response must arrive first so requestee can begin receive loop,
+        # otherwise first ack won't arrive until all pending chunks were
+        # delivered. In that case max BDP would always be 128KiB, aka. max
+        # ~10Mbit/sec over a 100ms link.
+        msg.reply(self._metadata_by_path[path])
 
         stream = self.router.stream_by_id(sender.context.context_id)
         state = self._state_by_stream.setdefault(stream, FileStreamState())
@@ -1013,12 +934,8 @@ class FileService(Service):
         :param bytes out_path:
             Name of the output path on the local disk.
         :returns:
-            Tuple of (`ok`, `metadata`), where `ok` is :data:`True` on success,
-            or :data:`False` if the transfer was interrupted and the output
-            should be discarded.
-
-            `metadata` is a dictionary of file metadata as documented in
-            :meth:`fetch`.
+            :data:`True` on success, or :data:`False` if the transfer was
+            interrupted and the output should be discarded.
         """
         LOG.debug('get_file(): fetching %r from %r', path, context)
         t0 = time.time()
@@ -1030,7 +947,6 @@ class FileService(Service):
             sender=recv.to_sender(),
         )
 
-        received_bytes = 0
         for chunk in recv:
             s = chunk.unpickle()
             LOG.debug('get_file(%r): received %d bytes', path, len(s))
@@ -1040,19 +956,11 @@ class FileService(Service):
                 size=len(s),
             ).close()
             out_fp.write(s)
-            received_bytes += len(s)
 
-        ok = received_bytes == metadata['size']
-        if received_bytes < metadata['size']:
+        ok = out_fp.tell() == metadata['size']
+        if not ok:
             LOG.error('get_file(%r): receiver was closed early, controller '
-                      'may be shutting down, or the file was truncated '
-                      'during transfer. Expected %d bytes, received %d.',
-                      path, metadata['size'], received_bytes)
-        elif received_bytes > metadata['size']:
-            LOG.error('get_file(%r): the file appears to have grown '
-                      'while transfer was in progress. Expected %d '
-                      'bytes, received %d.',
-                      path, metadata['size'], received_bytes)
+                      'is likely shutting down.', path)
 
         LOG.debug('target.get_file(): fetched %d bytes of %r from %r in %dms',
                   metadata['size'], path, context, 1000 * (time.time() - t0))

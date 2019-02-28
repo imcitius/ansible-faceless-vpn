@@ -1,4 +1,4 @@
-# Copyright 2019, David Wilson
+# Copyright 2017, David Wilson
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
@@ -50,21 +50,14 @@ import mitogen.service
 import mitogen.unix
 import mitogen.utils
 
-import ansible
 import ansible.constants as C
 import ansible_mitogen.logging
 import ansible_mitogen.services
 
 from mitogen.core import b
-import ansible_mitogen.affinity
 
 
 LOG = logging.getLogger(__name__)
-
-ANSIBLE_PKG_OVERRIDE = (
-    u"__version__ = %r\n"
-    u"__author__ = %r\n"
-)
 
 
 def clean_shutdown(sock):
@@ -94,22 +87,25 @@ def getenv_int(key, default=0):
         return default
 
 
-def save_pid(name):
+def setup_gil():
     """
-    When debugging and profiling, it is very annoying to poke through the
-    process list to discover the currently running Ansible and MuxProcess IDs,
-    especially when trying to catch an issue during early startup. So here, if
-    a magic environment variable set, stash them in hidden files in the CWD::
-
-        alias muxpid="cat .ansible-mux.pid"
-        alias anspid="cat .ansible-controller.pid"
-
-        gdb -p $(muxpid)
-        perf top -p $(anspid)
+    Set extremely long GIL release interval to let threads naturally progress
+    through CPU-heavy sequences without forcing the wake of another thread that
+    may contend trying to run the same CPU-heavy code. For the new-style work,
+    this drops runtime ~33% and involuntary context switches by >80%,
+    essentially making threads cooperatively scheduled.
     """
-    if os.environ.get('MITOGEN_SAVE_PIDS'):
-        with open('.ansible-%s.pid' % (name,), 'w') as fp:
-            fp.write(str(os.getpid()))
+    try:
+        # Python 2.
+        sys.setcheckinterval(100000)
+    except AttributeError:
+        pass
+
+    try:
+        # Python 3.
+        sys.setswitchinterval(10)
+    except AttributeError:
+        pass
 
 
 class MuxProcess(object):
@@ -158,16 +154,13 @@ class MuxProcess(object):
     _instance = None
 
     @classmethod
-    def start(cls, _init_logging=True):
+    def start(cls):
         """
         Arrange for the subprocess to be started, if it is not already running.
 
         The parent process picks a UNIX socket path the child will use prior to
         fork, creates a socketpair used essentially as a semaphore, then blocks
         waiting for the child to indicate the UNIX socket is ready for use.
-
-        :param bool _init_logging:
-            For testing, if :data:`False`, don't initialize logging.
         """
         if cls.worker_sock is not None:
             return
@@ -175,34 +168,29 @@ class MuxProcess(object):
         if faulthandler is not None:
             faulthandler.enable()
 
-        mitogen.utils.setup_gil()
+        setup_gil()
         cls.unix_listener_path = mitogen.unix.make_socket_path()
         cls.worker_sock, cls.child_sock = socket.socketpair()
         atexit.register(lambda: clean_shutdown(cls.worker_sock))
         mitogen.core.set_cloexec(cls.worker_sock.fileno())
         mitogen.core.set_cloexec(cls.child_sock.fileno())
 
-        cls.profiling = os.environ.get('MITOGEN_PROFILING') is not None
-        if cls.profiling:
+        if os.environ.get('MITOGEN_PROFILING'):
             mitogen.core.enable_profiling()
 
         cls.original_env = dict(os.environ)
         cls.child_pid = os.fork()
-        if _init_logging:
-            ansible_mitogen.logging.setup()
+        ansible_mitogen.logging.setup()
         if cls.child_pid:
-            save_pid('controller')
-            ansible_mitogen.affinity.policy.assign_controller()
             cls.child_sock.close()
             cls.child_sock = None
             mitogen.core.io_op(cls.worker_sock.recv, 1)
         else:
-            save_pid('mux')
-            ansible_mitogen.affinity.policy.assign_muxprocess()
             cls.worker_sock.close()
             cls.worker_sock = None
             self = cls()
             self.worker_main()
+            sys.exit()
 
     def worker_main(self):
         """
@@ -213,19 +201,10 @@ class MuxProcess(object):
         self._setup_master()
         self._setup_services()
 
-        try:
-            # Let the parent know our listening socket is ready.
-            mitogen.core.io_op(self.child_sock.send, b('1'))
-            # Block until the socket is closed, which happens on parent exit.
-            mitogen.core.io_op(self.child_sock.recv, 1)
-        finally:
-            self.broker.shutdown()
-            self.broker.join()
-
-            # Test frameworks living somewhere higher on the stack of the
-            # original parent process may try to catch sys.exit(), so do a C
-            # level exit instead.
-            os._exit(0)
+        # Let the parent know our listening socket is ready.
+        mitogen.core.io_op(self.child_sock.send, b('1'))
+        # Block until the socket is closed, which happens on parent exit.
+        mitogen.core.io_op(self.child_sock.recv, 1)
 
     def _enable_router_debug(self):
         if 'MITOGEN_ROUTER_DEBUG' in os.environ:
@@ -236,76 +215,15 @@ class MuxProcess(object):
         if secs:
             mitogen.debug.dump_to_logger(secs=secs)
 
-    def _setup_simplejson(self, responder):
-        """
-        We support serving simplejson for Python 2.4 targets on Ansible 2.3, at
-        least so the package's own CI Docker scripts can run without external
-        help, however newer versions of simplejson no longer support Python
-        2.4. Therefore override any installed/loaded version with a
-        2.4-compatible version we ship in the compat/ directory.
-        """
-        responder.whitelist_prefix('simplejson')
-
-        # issue #536: must be at end of sys.path, in case existing newer
-        # version is already loaded.
-        compat_path = os.path.join(os.path.dirname(__file__), 'compat')
-        sys.path.append(compat_path)
-
-        for fullname, is_pkg, suffix in (
-            (u'simplejson', True, '__init__.py'),
-            (u'simplejson.decoder', False, 'decoder.py'),
-            (u'simplejson.encoder', False, 'encoder.py'),
-            (u'simplejson.scanner', False, 'scanner.py'),
-        ):
-            path = os.path.join(compat_path, 'simplejson', suffix)
-            fp = open(path, 'rb')
-            try:
-                source = fp.read()
-            finally:
-                fp.close()
-
-            responder.add_source_override(
-                fullname=fullname,
-                path=path,
-                source=source,
-                is_pkg=is_pkg,
-            )
-
-    def _setup_responder(self, responder):
-        """
-        Configure :class:`mitogen.master.ModuleResponder` to only permit
-        certain packages, and to generate custom responses for certain modules.
-        """
-        responder.whitelist_prefix('ansible')
-        responder.whitelist_prefix('ansible_mitogen')
-        self._setup_simplejson(responder)
-
-        # Ansible 2.3 is compatible with Python 2.4 targets, however
-        # ansible/__init__.py is not. Instead, executor/module_common.py writes
-        # out a 2.4-compatible namespace package for unknown reasons. So we
-        # copy it here.
-        responder.add_source_override(
-            fullname='ansible',
-            path=ansible.__file__,
-            source=(ANSIBLE_PKG_OVERRIDE % (
-                ansible.__version__,
-                ansible.__author__,
-            )).encode(),
-            is_pkg=True,
-        )
-
     def _setup_master(self):
         """
         Construct a Router, Broker, and mitogen.unix listener
         """
-        self.broker = mitogen.master.Broker(install_watcher=False)
-        self.router = mitogen.master.Router(
-            broker=self.broker,
-            max_message_size=4096 * 1048576,
-        )
-        self._setup_responder(self.router.responder)
-        mitogen.core.listen(self.broker, 'shutdown', self.on_broker_shutdown)
-        mitogen.core.listen(self.broker, 'exit', self.on_broker_exit)
+        self.router = mitogen.master.Router(max_message_size=4096 * 1048576)
+        self.router.responder.whitelist_prefix('ansible')
+        self.router.responder.whitelist_prefix('ansible_mitogen')
+        mitogen.core.listen(self.router.broker, 'shutdown', self.on_broker_shutdown)
+        mitogen.core.listen(self.router.broker, 'exit', self.on_broker_exit)
         self.listener = mitogen.unix.Listener(
             router=self.router,
             path=self.unix_listener_path,
@@ -327,7 +245,7 @@ class MuxProcess(object):
                 ansible_mitogen.services.ContextService(self.router),
                 ansible_mitogen.services.ModuleDepService(self.router),
             ],
-            size=getenv_int('MITOGEN_POOL_SIZE', default=32),
+            size=getenv_int('MITOGEN_POOL_SIZE', default=16),
         )
         LOG.debug('Service pool configured: size=%d', self.pool.size)
 
@@ -338,9 +256,13 @@ class MuxProcess(object):
         then cannot clean up pending handlers, which is required for the
         threads to exit gracefully.
         """
-        # In normal operation we presently kill the process because there is
-        # not yet any way to cancel connect().
-        self.pool.stop(join=self.profiling)
+        self.pool.stop(join=False)
+        try:
+            os.unlink(self.listener.path)
+        except OSError as e:
+            # Prevent a shutdown race with the parent process.
+            if e.args[0] != errno.ENOENT:
+                raise
 
     def on_broker_exit(self):
         """
@@ -348,9 +270,10 @@ class MuxProcess(object):
         ourself. In future this should gracefully join the pool, but TERM is
         fine for now.
         """
-        if not self.profiling:
-            # In normal operation we presently kill the process because there is
-            # not yet any way to cancel connect(). When profiling, threads
-            # including the broker must shut down gracefully, otherwise pstats
-            # won't be written.
-            os.kill(os.getpid(), signal.SIGTERM)
+        if os.environ.get('MITOGEN_PROFILING'):
+            # TODO: avoid killing pool threads before they have written their
+            # .pstats. Really shouldn't be using kill() here at all, but hard
+            # to guarantee services can always be unblocked during shutdown.
+            time.sleep(1)
+
+        os.kill(os.getpid(), signal.SIGTERM)

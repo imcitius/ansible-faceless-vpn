@@ -1,4 +1,4 @@
-# Copyright 2019, David Wilson
+# Copyright 2017, David Wilson
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
@@ -42,10 +42,3 @@ import ansible_mitogen.connection
 
 class Connection(ansible_mitogen.connection.Connection):
     transport = 'docker'
-
-    @property
-    def docker_cmd(self):
-        """
-        Ansible 2.3 synchronize module wants to know how we run Docker.
-        """
-        return 'docker'

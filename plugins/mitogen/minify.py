@@ -26,8 +26,6 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
-# !mitogen: minify_safe
-
 import sys
 
 try:
@@ -42,7 +40,13 @@ if sys.version_info < (2, 7, 11):
 else:
     import tokenize
 
+try:
+    from functools import lru_cache
+except ImportError:
+    from mitogen.compat.functools import lru_cache
 
+
+@lru_cache()
 def minimize_source(source):
     """Remove comments and docstrings from Python `source`, preserving line
     numbers and syntax of empty blocks.

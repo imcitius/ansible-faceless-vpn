@@ -1,4 +1,4 @@
-# Copyright 2019, David Wilson
+# Copyright 2017, David Wilson
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
@@ -25,8 +25,6 @@
 # CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
-
-# !mitogen: minify_safe
 
 import logging
 
@@ -64,8 +62,9 @@ class Stream(mitogen.parent.Stream):
         if username:
             self.username = username
 
-    def _get_name(self):
-        return u'docker.' + (self.container or self.image)
+    def connect(self):
+        super(Stream, self).connect()
+        self.name = u'docker.' + (self.container or self.image)
 
     def get_boot_command(self):
         args = ['--interactive']

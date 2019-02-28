@@ -1,4 +1,4 @@
-# Copyright 2019, David Wilson
+# Copyright 2017, David Wilson
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
@@ -26,9 +26,8 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
-# !mitogen: minify_safe
-
 import logging
+import os
 
 import mitogen.core
 import mitogen.parent
@@ -45,6 +44,10 @@ class PasswordError(mitogen.core.StreamError):
 class Stream(mitogen.parent.Stream):
     create_child = staticmethod(mitogen.parent.hybrid_tty_create_child)
     child_is_immediate_subprocess = False
+
+    #: Once connected, points to the corresponding DiagLogStream, allowing it
+    #: to be disconnected at the same time this stream is being torn down.
+    tty_stream = None
 
     username = 'root'
     password = None
@@ -68,8 +71,13 @@ class Stream(mitogen.parent.Stream):
         if incorrect_prompts is not None:
             self.incorrect_prompts = map(str.lower, incorrect_prompts)
 
-    def _get_name(self):
-        return u'doas.' + mitogen.core.to_text(self.username)
+    def connect(self):
+        super(Stream, self).connect()
+        self.name = u'doas.' + mitogen.core.to_text(self.username)
+
+    def on_disconnect(self, broker):
+        self.tty_stream.on_disconnect(broker)
+        super(Stream, self).on_disconnect(broker)
 
     def get_boot_command(self):
         bits = [self.doas_path, '-u', self.username, '--']
@@ -80,8 +88,15 @@ class Stream(mitogen.parent.Stream):
     password_incorrect_msg = 'doas password is incorrect'
     password_required_msg = 'doas password is required'
 
-    def _connect_input_loop(self, it):
+    def _connect_bootstrap(self, extra_fd):
+        self.tty_stream = mitogen.parent.DiagLogStream(extra_fd, self)
+
         password_sent = False
+        it = mitogen.parent.iter_read(
+            fds=[self.receive_side.fd, extra_fd],
+            deadline=self.connect_deadline,
+        )
+
         for buf in it:
             LOG.debug('%r: received %r', self, buf)
             if buf.endswith(self.EC0_MARKER):
@@ -96,18 +111,8 @@ class Stream(mitogen.parent.Stream):
                 if password_sent:
                     raise PasswordError(self.password_incorrect_msg)
                 LOG.debug('sending password')
-                self.diag_stream.transmit_side.write(
+                self.tty_stream.transmit_side.write(
                     mitogen.core.to_text(self.password + '\n').encode('utf-8')
                 )
                 password_sent = True
         raise mitogen.core.StreamError('bootstrap failed')
-
-    def _connect_bootstrap(self):
-        it = mitogen.parent.iter_read(
-            fds=[self.receive_side.fd, self.diag_stream.receive_side.fd],
-            deadline=self.connect_deadline,
-        )
-        try:
-            self._connect_input_loop(it)
-        finally:
-            it.close()
