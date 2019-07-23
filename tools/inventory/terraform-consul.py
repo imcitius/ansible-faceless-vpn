@@ -6,7 +6,7 @@ import sys
 import json
 from collections import OrderedDict
 import requests
-import sys
+import re
 
 vm_prefix = [
     'vsphere_virtual_machine.host'
@@ -58,6 +58,17 @@ def _get_outputs(current_module, modules):
 
     return _get_outputs(parent, modules)
 
+def _is_ip_private(ip):
+
+    # https://en.wikipedia.org/wiki/Private_network
+
+    priv_lo = re.compile("^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$")
+    priv_24 = re.compile("^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$")
+    priv_20 = re.compile("^192\.168\.\d{1,3}.\d{1,3}$")
+    priv_16 = re.compile("^172.(1[6-9]|2[0-9]|3[0-1]).[0-9]{1,3}.[0-9]{1,3}$")
+
+    res = priv_lo.match(ip) or priv_24.match(ip) or priv_20.match(ip) or priv_16.match(ip)
+    return res is not None
 
 def _processing(tfstate, inventory):
     if 'modules' not in tfstate:
@@ -119,18 +130,23 @@ def _processing(tfstate, inventory):
             if 'name' not in attrs:
                 raise KeyError("resource %s (%s) has not %s attribute" % (name, group_name, 'name'))
 
-            host = attrs['guest_ip_addresses.0'] if 'guest_ip_addresses.0' in attrs else attrs['default_ip_address']
+            host=''
+            if ('guest_ip_addresses.0' in attrs) and (_is_ip_private(attrs['guest_ip_addresses.0'])):
+                host = attrs['guest_ip_addresses.0']
+            elif ('guest_ip_addresses.1' in attrs) and (_is_ip_private(attrs['guest_ip_addresses.1'])):
+                host = attrs['guest_ip_addresses.1']
+            else:
+                host = attrs['default_ip_address']
+
             inventory[group_name]['hosts'].append(host)
             inventory['_meta']['hostvars'][host] = dict()
             inventory['_meta']['hostvars'][host]['hostname'] = attrs['name']
     return inventory
 
-
 def get_tfstate():
-    url = 'http://consul.service.infra1.consul:8500/v1/kv/' + tf_state_path + '%3A' + project
+    url = 'http://' + 'consul.service.infra1.consul' + ':8500/v1/kv/' + tf_state_path + '%3A' + project
     r = requests.get(url)
     return json.loads(base64.b64decode(r.json()[0]['Value']), encoding='utf-8')
-
 
 try:
     tfstate = get_tfstate()
