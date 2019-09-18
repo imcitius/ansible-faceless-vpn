@@ -27,18 +27,29 @@
 # POSSIBILITY OF SUCH DAMAGE.
 
 from __future__ import absolute_import
-import os.path
-import sys
+from __future__ import unicode_literals
 
-try:
-    import ansible_mitogen.connection
-except ImportError:
-    base_dir = os.path.dirname(__file__)
-    sys.path.insert(0, os.path.abspath(os.path.join(base_dir, '../../..')))
-    del base_dir
+"""
+Fetch the connection configuration stack that would be used to connect to a
+target, without actually connecting to it.
+"""
 
 import ansible_mitogen.connection
 
+from ansible.plugins.action import ActionBase
 
-class Connection(ansible_mitogen.connection.Connection):
-    transport = 'machinectl'
+
+class ActionModule(ActionBase):
+    def run(self, tmp=None, task_vars=None):
+        if not isinstance(self._connection,
+                          ansible_mitogen.connection.Connection):
+            return {
+                'skipped': True,
+            }
+
+        _, stack = self._connection._build_stack()
+        return {
+            'changed': True,
+            'result': stack,
+            '_ansible_verbose_always': True,
+        }

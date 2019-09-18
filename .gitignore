@@ -1,4 +1,4 @@
-roles/*.role
+roles/*
 /.idea/
 *.retry
 files

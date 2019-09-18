@@ -1,4 +1,4 @@
-# Copyright 2017, David Wilson
+# Copyright 2019, David Wilson
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
@@ -26,39 +26,40 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
-import logging
+# !mitogen: minify_safe
 
 import mitogen.core
 import mitogen.parent
 
 
-LOG = logging.getLogger(__name__)
+class Options(mitogen.parent.Options):
+    container = None
+    username = None
+    jexec_path = u'/usr/sbin/jexec'
+
+    def __init__(self, container, jexec_path=None, username=None, **kwargs):
+        super(Options, self).__init__(**kwargs)
+        self.container = mitogen.core.to_text(container)
+        if username:
+            self.username = mitogen.core.to_text(username)
+        if jexec_path:
+            self.jexec_path = jexec_path
 
 
-class Stream(mitogen.parent.Stream):
+class Connection(mitogen.parent.Connection):
+    options_class = Options
+
     child_is_immediate_subprocess = False
     create_child_args = {
         'merge_stdio': True
     }
 
-    container = None
-    username = None
-    jexec_path = '/usr/sbin/jexec'
-
-    def construct(self, container, jexec_path=None, username=None, **kwargs):
-        super(Stream, self).construct(**kwargs)
-        self.container = container
-        self.username = username
-        if jexec_path:
-            self.jexec_path = jexec_path
-
-    def connect(self):
-        super(Stream, self).connect()
-        self.name = u'jail.' + self.container
+    def _get_name(self):
+        return u'jail.' + self.options.container
 
     def get_boot_command(self):
-        bits = [self.jexec_path]
-        if self.username:
-            bits += ['-U', self.username]
-        bits += [self.container]
-        return bits + super(Stream, self).get_boot_command()
+        bits = [self.options.jexec_path]
+        if self.options.username:
+            bits += ['-U', self.options.username]
+        bits += [self.options.container]
+        return bits + super(Connection, self).get_boot_command()

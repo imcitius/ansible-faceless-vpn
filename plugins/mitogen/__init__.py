@@ -1,4 +1,4 @@
-# Copyright 2017, David Wilson
+# Copyright 2019, David Wilson
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
@@ -26,6 +26,8 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
+# !mitogen: minify_safe
+
 """
 On the Mitogen master, this is imported from ``mitogen/__init__.py`` as would
 be expected. On the slave, it is built dynamically during startup.
@@ -33,7 +35,7 @@ be expected. On the slave, it is built dynamically during startup.
 
 
 #: Library version as a tuple.
-__version__ = (0, 2, 3)
+__version__ = (0, 2, 8)
 
 
 #: This is :data:`False` in slave contexts. Previously it was used to prevent
@@ -57,7 +59,12 @@ parent_id = None
 parent_ids = []
 
 
-def main(log_level='INFO', profiling=False):
+import os
+_default_profiling = os.environ.get('MITOGEN_PROFILING') is not None
+del os
+
+
+def main(log_level='INFO', profiling=_default_profiling):
     """
     Convenience decorator primarily useful for writing discardable test
     scripts.
@@ -104,10 +111,10 @@ def main(log_level='INFO', profiling=False):
         if profiling:
             mitogen.core.enable_profiling()
             mitogen.master.Router.profiling = profiling
-        utils.log_to_file(level=log_level)
+        mitogen.utils.log_to_file(level=log_level)
         return mitogen.core._profile_hook(
-            'main',
-            utils.run_with_router,
+            'app.main',
+            mitogen.utils.run_with_router,
             func,
         )
     return wrapper

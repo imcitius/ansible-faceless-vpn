@@ -1,4 +1,4 @@
-# Copyright 2017, David Wilson
+# Copyright 2019, David Wilson
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
@@ -26,6 +26,7 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
+# !mitogen: minify_safe
 
 """
 These classes implement execution for each style of Ansible module. They are
@@ -35,23 +36,35 @@ Each class in here has a corresponding Planner class in planners.py that knows
 how to build arguments for it, preseed related data, etc.
 """
 
-from __future__ import absolute_import
-from __future__ import unicode_literals
-
 import atexit
-import ctypes
-import errno
 import imp
-import json
-import logging
 import os
+import re
 import shlex
+import shutil
 import sys
 import tempfile
+import traceback
 import types
 
 import mitogen.core
 import ansible_mitogen.target  # TODO: circular import
+from mitogen.core import b
+from mitogen.core import bytes_partition
+from mitogen.core import str_rpartition
+from mitogen.core import to_text
+
+try:
+    import ctypes
+except ImportError:
+    # Python 2.4
+    ctypes = None
+
+try:
+    import json
+except ImportError:
+    # Python 2.4
+    import simplejson as json
 
 try:
     # Cannot use cStringIO as it does not support Unicode.
@@ -64,6 +77,10 @@ try:
 except ImportError:
     from pipes import quote as shlex_quote
 
+# Absolute imports for <2.5.
+logging = __import__('logging')
+
+
 # Prevent accidental import of an Ansible module from hanging on stdin read.
 import ansible.module_utils.basic
 ansible.module_utils.basic._ANSIBLE_ARGS = '{}'
@@ -72,16 +89,72 @@ ansible.module_utils.basic._ANSIBLE_ARGS = '{}'
 # resolv.conf at startup and never implicitly reload it. Cope with that via an
 # explicit call to res_init() on each task invocation. BSD-alikes export it
 # directly, Linux #defines it as "__res_init".
-libc = ctypes.CDLL(None)
 libc__res_init = None
-for symbol in 'res_init', '__res_init':
-    try:
-        libc__res_init = getattr(libc, symbol)
-    except AttributeError:
-        pass
+if ctypes:
+    libc = ctypes.CDLL(None)
+    for symbol in 'res_init', '__res_init':
+        try:
+            libc__res_init = getattr(libc, symbol)
+        except AttributeError:
+            pass
 
 iteritems = getattr(dict, 'iteritems', dict.items)
 LOG = logging.getLogger(__name__)
+
+
+def shlex_split_b(s):
+    """
+    Use shlex.split() to split characters in some single-byte encoding, without
+    knowing what that encoding is. The input is bytes, the output is a list of
+    bytes.
+    """
+    assert isinstance(s, mitogen.core.BytesType)
+    if mitogen.core.PY3:
+        return [
+            t.encode('latin1')
+            for t in shlex.split(s.decode('latin1'), comments=True)
+        ]
+
+    return [t for t in shlex.split(s, comments=True)]
+
+
+class TempFileWatcher(object):
+    """
+    Since Ansible 2.7.0, lineinfile leaks file descriptors returned by
+    :func:`tempfile.mkstemp` (ansible/ansible#57327). Handle this and all
+    similar cases by recording descriptors produced by mkstemp during module
+    execution, and cleaning up any leaked descriptors on completion.
+    """
+    def __init__(self):
+        self._real_mkstemp = tempfile.mkstemp
+        # (fd, st.st_dev, st.st_ino)
+        self._fd_dev_inode = []
+        tempfile.mkstemp = self._wrap_mkstemp
+
+    def _wrap_mkstemp(self, *args, **kwargs):
+        fd, path = self._real_mkstemp(*args, **kwargs)
+        st = os.fstat(fd)
+        self._fd_dev_inode.append((fd, st.st_dev, st.st_ino))
+        return fd, path
+
+    def revert(self):
+        tempfile.mkstemp = self._real_mkstemp
+        for tup in self._fd_dev_inode:
+            self._revert_one(*tup)
+
+    def _revert_one(self, fd, st_dev, st_ino):
+        try:
+            st = os.fstat(fd)
+        except OSError:
+            # FD no longer exists.
+            return
+
+        if not (st.st_dev == st_dev and st.st_ino == st_ino):
+            # FD reused.
+            return
+
+        LOG.info("a tempfile.mkstemp() FD was leaked during the last task")
+        os.close(fd)
 
 
 class EnvironmentFileWatcher(object):
@@ -98,13 +171,19 @@ class EnvironmentFileWatcher(object):
     A more robust future approach may simply be to arrange for the persistent
     interpreter to restart when a change is detected.
     """
+    # We know nothing about the character set of /etc/environment or the
+    # process environment.
+    environ = getattr(os, 'environb', os.environ)
+
     def __init__(self, path):
         self.path = os.path.expanduser(path)
         #: Inode data at time of last check.
         self._st = self._stat()
         #: List of inherited keys appearing to originated from this file.
-        self._keys = [key for key, value in self._load()
-                      if value == os.environ.get(key)]
+        self._keys = [
+            key for key, value in self._load()
+            if value == self.environ.get(key)
+        ]
         LOG.debug('%r installed; existing keys: %r', self, self._keys)
 
     def __repr__(self):
@@ -118,8 +197,11 @@ class EnvironmentFileWatcher(object):
 
     def _load(self):
         try:
-            with open(self.path, 'r') as fp:
+            fp = open(self.path, 'rb')
+            try:
                 return list(self._parse(fp))
+            finally:
+                fp.close()
         except IOError:
             return []
 
@@ -129,36 +211,36 @@ class EnvironmentFileWatcher(object):
         """
         for line in fp:
             # '   #export foo=some var  ' -> ['#export', 'foo=some var  ']
-            bits = shlex.split(line, comments=True)
-            if (not bits) or bits[0].startswith('#'):
+            bits = shlex_split_b(line)
+            if (not bits) or bits[0].startswith(b('#')):
                 continue
 
-            if bits[0] == 'export':
+            if bits[0] == b('export'):
                 bits.pop(0)
 
-            key, sep, value = (' '.join(bits)).partition('=')
+            key, sep, value = bytes_partition(b(' ').join(bits), b('='))
             if key and sep:
                 yield key, value
 
     def _on_file_changed(self):
         LOG.debug('%r: file changed, reloading', self)
         for key, value in self._load():
-            if key in os.environ:
+            if key in self.environ:
                 LOG.debug('%r: existing key %r=%r exists, not setting %r',
-                          self, key, os.environ[key], value)
+                          self, key, self.environ[key], value)
             else:
                 LOG.debug('%r: setting key %r to %r', self, key, value)
                 self._keys.append(key)
-                os.environ[key] = value
+                self.environ[key] = value
 
     def _remove_existing(self):
         """
         When a change is detected, remove keys that existed in the old file.
         """
         for key in self._keys:
-            if key in os.environ:
+            if key in self.environ:
                 LOG.debug('%r: removing old key %r', self, key)
-                del os.environ[key]
+                del self.environ[key]
         self._keys = []
 
     def check(self):
@@ -255,7 +337,7 @@ class Runner(object):
         self.service_context = service_context
         self.econtext = econtext
         self.detach = detach
-        self.args = json.loads(json_args)
+        self.args = json.loads(mitogen.core.to_text(json_args))
         self.good_temp_dir = good_temp_dir
         self.extra_env = extra_env
         self.env = env
@@ -313,11 +395,22 @@ class Runner(object):
             env.update(self.env)
         self._env = TemporaryEnvironment(env)
 
+    def _revert_cwd(self):
+        """
+        #591: make a best-effort attempt to return to :attr:`good_temp_dir`.
+        """
+        try:
+            os.chdir(self.good_temp_dir)
+        except OSError:
+            LOG.debug('%r: could not restore CWD to %r',
+                      self, self.good_temp_dir)
+
     def revert(self):
         """
         Revert any changes made to the process after running a module. The base
         implementation simply restores the original environment.
         """
+        self._revert_cwd()
         self._env.revert()
         self.revert_temp_dir()
 
@@ -354,6 +447,55 @@ class Runner(object):
             self.revert()
 
 
+class AtExitWrapper(object):
+    """
+    issue #397, #454: Newer Ansibles use :func:`atexit.register` to trigger
+    tmpdir cleanup when AnsibleModule.tmpdir is responsible for creating its
+    own temporary directory, however with Mitogen processes are preserved
+    across tasks, meaning cleanup must happen earlier.
+
+    Patch :func:`atexit.register`, catching :func:`shutil.rmtree` calls so they
+    can be executed on task completion, rather than on process shutdown.
+    """
+    # Wrapped in a dict to avoid instance method decoration.
+    original = {
+        'register': atexit.register
+    }
+
+    def __init__(self):
+        assert atexit.register == self.original['register'], \
+            "AtExitWrapper installed twice."
+        atexit.register = self._atexit__register
+        self.deferred = []
+
+    def revert(self):
+        """
+        Restore the original :func:`atexit.register`.
+        """
+        assert atexit.register == self._atexit__register, \
+            "AtExitWrapper not installed."
+        atexit.register = self.original['register']
+
+    def run_callbacks(self):
+        while self.deferred:
+            func, targs, kwargs = self.deferred.pop()
+            try:
+                func(*targs, **kwargs)
+            except Exception:
+                LOG.exception('While running atexit callbacks')
+
+    def _atexit__register(self, func, *targs, **kwargs):
+        """
+        Intercept :func:`atexit.register` calls, diverting any to
+        :func:`shutil.rmtree` into a private list.
+        """
+        if func == shutil.rmtree:
+            self.deferred.append((func, targs, kwargs))
+            return
+
+        self.original['register'](func, *targs, **kwargs)
+
+
 class ModuleUtilsImporter(object):
     """
     :param list module_utils:
@@ -388,7 +530,7 @@ class ModuleUtilsImporter(object):
             mod.__path__ = []
             mod.__package__ = str(fullname)
         else:
-            mod.__package__ = str(fullname.rpartition('.')[0])
+            mod.__package__ = str(str_rpartition(to_text(fullname), '.')[0])
         exec(code, mod.__dict__)
         self._loaded.add(fullname)
         return mod
@@ -404,6 +546,8 @@ class TemporaryEnvironment(object):
         self.original = dict(os.environ)
         self.env = env or {}
         for key, value in iteritems(self.env):
+            key = mitogen.core.to_text(key)
+            value = mitogen.core.to_text(value)
             if value is None:
                 os.environ.pop(key, None)
             else:
@@ -530,7 +674,7 @@ class ProgramRunner(Runner):
         Return the final argument vector used to execute the program.
         """
         return [
-            self.args['_ansible_shell_executable'],
+            self.args.get('_ansible_shell_executable', '/bin/sh'),
             '-c',
             self._get_shell_fragment(),
         ]
@@ -547,18 +691,19 @@ class ProgramRunner(Runner):
                 args=self._get_argv(),
                 emulate_tty=self.emulate_tty,
             )
-        except Exception as e:
+        except Exception:
             LOG.exception('While running %s', self._get_argv())
+            e = sys.exc_info()[1]
             return {
-                'rc': 1,
-                'stdout': '',
-                'stderr': '%s: %s' % (type(e), e),
+                u'rc': 1,
+                u'stdout': u'',
+                u'stderr': u'%s: %s' % (type(e), e),
             }
 
         return {
-            'rc': rc,
-            'stdout': mitogen.core.to_text(stdout),
-            'stderr': mitogen.core.to_text(stderr),
+            u'rc': rc,
+            u'stdout': mitogen.core.to_text(stdout),
+            u'stderr': mitogen.core.to_text(stderr),
         }
 
 
@@ -608,7 +753,7 @@ class ScriptRunner(ProgramRunner):
         self.interpreter_fragment = interpreter_fragment
         self.is_python = is_python
 
-    b_ENCODING_STRING = b'# -*- coding: utf-8 -*-'
+    b_ENCODING_STRING = b('# -*- coding: utf-8 -*-')
 
     def _get_program(self):
         return self._rewrite_source(
@@ -617,7 +762,7 @@ class ScriptRunner(ProgramRunner):
 
     def _get_argv(self):
         return [
-            self.args['_ansible_shell_executable'],
+            self.args.get('_ansible_shell_executable', '/bin/sh'),
             '-c',
             self._get_shell_fragment(),
         ]
@@ -641,13 +786,13 @@ class ScriptRunner(ProgramRunner):
         # While Ansible rewrites the #! using ansible_*_interpreter, it is
         # never actually used to execute the script, instead it is a shell
         # fragment consumed by shell/__init__.py::build_module_command().
-        new = [b'#!' + utf8(self.interpreter_fragment)]
+        new = [b('#!') + utf8(self.interpreter_fragment)]
         if self.is_python:
             new.append(self.b_ENCODING_STRING)
 
-        _, _, rest = s.partition(b'\n')
+        _, _, rest = bytes_partition(s, b('\n'))
         new.append(rest)
-        return b'\n'.join(new)
+        return b('\n').join(new)
 
 
 class NewStyleRunner(ScriptRunner):
@@ -677,7 +822,21 @@ class NewStyleRunner(ScriptRunner):
         for fullname, _, _ in self.module_map['custom']:
             mitogen.core.import_module(fullname)
         for fullname in self.module_map['builtin']:
-            mitogen.core.import_module(fullname)
+            try:
+                mitogen.core.import_module(fullname)
+            except ImportError:
+                # #590: Ansible 2.8 module_utils.distro is a package that
+                # replaces itself in sys.modules with a non-package during
+                # import. Prior to replacement, it is a real package containing
+                # a '_distro' submodule which is used on 2.x. Given a 2.x
+                # controller and 3.x target, the import hook never needs to run
+                # again before this replacement occurs, and 'distro' is
+                # replaced with a module from the stdlib. In this case as this
+                # loop progresses to the next entry and attempts to preload
+                # 'distro._distro', the import mechanism will fail. So here we
+                # silently ignore any failure for it.
+                if fullname != 'ansible.module_utils.distro._distro':
+                    raise
 
     def _setup_excepthook(self):
         """
@@ -695,12 +854,14 @@ class NewStyleRunner(ScriptRunner):
         # module, but this has never been a bug report. Instead act like an
         # interpreter that had its script piped on stdin.
         self._argv = TemporaryArgv([''])
+        self._temp_watcher = TempFileWatcher()
         self._importer = ModuleUtilsImporter(
             context=self.service_context,
             module_utils=self.module_map['custom'],
         )
         self._setup_imports()
         self._setup_excepthook()
+        self.atexit_wrapper = AtExitWrapper()
         if libc__res_init:
             libc__res_init()
 
@@ -708,6 +869,8 @@ class NewStyleRunner(ScriptRunner):
         sys.excepthook = self.original_excepthook
 
     def revert(self):
+        self.atexit_wrapper.revert()
+        self._temp_watcher.revert()
         self._argv.revert()
         self._stdio.revert()
         self._revert_excepthook()
@@ -722,27 +885,38 @@ class NewStyleRunner(ScriptRunner):
     def _setup_args(self):
         pass
 
+    # issue #555: in old times it was considered good form to reload sys and
+    # change the default encoding. This hack was removed from Ansible long ago,
+    # but not before permeating into many third party modules.
+    PREHISTORIC_HACK_RE = re.compile(
+        b(r'reload\s*\(\s*sys\s*\)\s*'
+          r'sys\s*\.\s*setdefaultencoding\([^)]+\)')
+    )
+
     def _setup_program(self):
-        self.source = ansible_mitogen.target.get_small_file(
+        source = ansible_mitogen.target.get_small_file(
             context=self.service_context,
             path=self.path,
         )
+        self.source = self.PREHISTORIC_HACK_RE.sub(b(''), source)
 
     def _get_code(self):
         try:
             return self._code_by_path[self.path]
         except KeyError:
             return self._code_by_path.setdefault(self.path, compile(
-                source=self.source,
-                filename="master:" + self.path,
-                mode='exec',
-                dont_inherit=True,
+                # Py2.4 doesn't support kwargs.
+                self.source,            # source
+                "master:" + self.path,  # filename
+                'exec',                 # mode
+                0,                      # flags
+                True,                   # dont_inherit
             ))
 
     if mitogen.core.PY3:
         main_module_name = '__main__'
     else:
-        main_module_name = b'__main__'
+        main_module_name = b('__main__')
 
     def _handle_magic_exception(self, mod, exc):
         """
@@ -764,17 +938,9 @@ class NewStyleRunner(ScriptRunner):
                 exec(code, vars(mod))
             else:
                 exec('exec code in vars(mod)')
-        except Exception as e:
-            self._handle_magic_exception(mod, e)
+        except Exception:
+            self._handle_magic_exception(mod, sys.exc_info()[1])
             raise
-
-    def _run_atexit_funcs(self):
-        """
-        Newer Ansibles use atexit.register() to trigger tmpdir cleanup, when
-        AnsibleModule.tmpdir is responsible for creating its own temporary
-        directory.
-        """
-        atexit._run_exitfuncs()
 
     def _run(self):
         mod = types.ModuleType(self.main_module_name)
@@ -789,24 +955,30 @@ class NewStyleRunner(ScriptRunner):
         )
 
         code = self._get_code()
-        exc = None
+        rc = 2
         try:
             try:
                 self._run_code(code, mod)
-            finally:
-                self._run_atexit_funcs()
-        except SystemExit as e:
-            exc = e
+            except SystemExit:
+                exc = sys.exc_info()[1]
+                rc = exc.args[0]
+            except Exception:
+                # This writes to stderr by default.
+                traceback.print_exc()
+                rc = 1
+
+        finally:
+            self.atexit_wrapper.run_callbacks()
 
         return {
-            'rc': exc.args[0] if exc else 2,
-            'stdout': mitogen.core.to_text(sys.stdout.getvalue()),
-            'stderr': mitogen.core.to_text(sys.stderr.getvalue()),
+            u'rc': rc,
+            u'stdout': mitogen.core.to_text(sys.stdout.getvalue()),
+            u'stderr': mitogen.core.to_text(sys.stderr.getvalue()),
         }
 
 
 class JsonArgsRunner(ScriptRunner):
-    JSON_ARGS = b'<<INCLUDE_ANSIBLE_MODULE_JSON_ARGS>>'
+    JSON_ARGS = b('<<INCLUDE_ANSIBLE_MODULE_JSON_ARGS>>')
 
     def _get_args_contents(self):
         return json.dumps(self.args).encode()

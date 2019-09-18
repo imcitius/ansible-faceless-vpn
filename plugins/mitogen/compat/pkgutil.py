@@ -1,5 +1,7 @@
 """Utilities to support packages."""
 
+# !mitogen: minify_safe
+
 # NOTE: This module must remain compatible with Python 2.3, as it is shared
 # by setuptools for distribution with Python 2.3 and up.
 
@@ -540,7 +542,8 @@ def extend_path(path, name):
         if os.path.isfile(pkgfile):
             try:
                 f = open(pkgfile)
-            except IOError, msg:
+            except IOError:
+                msg = sys.exc_info()[1]
                 sys.stderr.write("Can't open %s: %s\n" %
                                  (pkgfile, msg))
             else:
