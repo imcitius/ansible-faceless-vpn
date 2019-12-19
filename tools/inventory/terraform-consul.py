@@ -44,7 +44,7 @@ def is_vm(name):
 
 def _get_outputs(current_module, modules):
     if len(current_module['path']) == 1:
-        return None
+        return []
 
     if len(current_module['outputs']) != 0:
         return current_module['outputs']
