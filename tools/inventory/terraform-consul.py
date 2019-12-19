@@ -7,6 +7,7 @@ import json
 from collections import OrderedDict
 import requests
 import re
+import traceback
 
 vm_prefix = [
     'vsphere_virtual_machine.host'
@@ -154,4 +155,5 @@ try:
     sys.stdout.write(json.dumps(inventory, indent=2))
 except Exception as e:
     print(str(e), file=sys.stderr)
+    print(traceback.format_exc())
     sys.exit(1)
