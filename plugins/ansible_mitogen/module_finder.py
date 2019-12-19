@@ -1,4 +1,4 @@
-# Copyright 2017, David Wilson
+# Copyright 2019, David Wilson
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
@@ -57,7 +57,7 @@ def get_code(module):
     """
     Compile and return a Module's code object.
     """
-    fp = open(module.path)
+    fp = open(module.path, 'rb')
     try:
         return compile(fp.read(), str(module.name), 'exec')
     finally:

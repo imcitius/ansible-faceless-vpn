@@ -30,15 +30,38 @@ from __future__ import absolute_import
 import os.path
 import sys
 
-try:
-    import ansible_mitogen.connection
-except ImportError:
-    base_dir = os.path.dirname(__file__)
-    sys.path.insert(0, os.path.abspath(os.path.join(base_dir, '../../..')))
-    del base_dir
+#
+# This is not the real Strategy implementation module, it simply exists as a
+# proxy to the real module, which is loaded using Python's regular import
+# mechanism, to prevent Ansible's PluginLoader from making up a fake name that
+# results in ansible_mitogen plugin modules being loaded twice: once by
+# PluginLoader with a name like "ansible.plugins.strategy.mitogen", which is
+# stuffed into sys.modules even though attempting to import it will trigger an
+# ImportError, and once under its canonical name, "ansible_mitogen.strategy".
+#
+# Therefore we have a proxy module that imports it under the real name, and
+# sets up the duff PluginLoader-imported module to just contain objects from
+# the real module, so duplicate types don't exist in memory, and things like
+# debuggers and isinstance() work predictably.
+#
 
-import ansible_mitogen.connection
+BASE_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), '../../..')
+)
+
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
+
+import ansible_mitogen.loaders
+import ansible_mitogen.strategy
 
 
-class Connection(ansible_mitogen.connection.Connection):
-    transport = 'machinectl'
+Base = ansible_mitogen.loaders.strategy_loader.get('host_pinned', class_only=True)
+
+if Base is None:
+    raise ImportError(
+        'The host_pinned strategy is only available in Ansible 2.7 or newer.'
+    )
+
+class StrategyModule(ansible_mitogen.strategy.StrategyMixin, Base):
+    pass

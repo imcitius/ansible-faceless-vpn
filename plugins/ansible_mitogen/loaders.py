@@ -1,4 +1,4 @@
-# Copyright 2017, David Wilson
+# Copyright 2019, David Wilson
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
@@ -31,6 +31,15 @@ Stable names for PluginLoader instances across Ansible versions.
 """
 
 from __future__ import absolute_import
+
+__all__ = [
+    'action_loader',
+    'connection_loader',
+    'module_loader',
+    'module_utils_loader',
+    'shell_loader',
+    'strategy_loader',
+]
 
 try:
     from ansible.plugins.loader import action_loader

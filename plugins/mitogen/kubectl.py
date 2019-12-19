@@ -1,5 +1,4 @@
-# coding: utf-8
-# Copyright 2018, Yannig Perré
+# Copyright 2018, Yannig Perre
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
@@ -27,39 +26,42 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
-import logging
+# !mitogen: minify_safe
 
 import mitogen.core
 import mitogen.parent
 
 
-LOG = logging.getLogger(__name__)
-
-
-class Stream(mitogen.parent.Stream):
-    child_is_immediate_subprocess = True
-
+class Options(mitogen.parent.Options):
     pod = None
     kubectl_path = 'kubectl'
     kubectl_args = None
 
-    # TODO: better way of capturing errors such as "No such container."
-    create_child_args = {
-        'merge_stdio': True
-    }
-
-    def construct(self, pod, kubectl_path=None, kubectl_args=None, **kwargs):
-        super(Stream, self).construct(**kwargs)
+    def __init__(self, pod, kubectl_path=None, kubectl_args=None, **kwargs):
+        super(Options, self).__init__(**kwargs)
         assert pod
         self.pod = pod
         if kubectl_path:
             self.kubectl_path = kubectl_path
         self.kubectl_args = kubectl_args or []
 
-    def connect(self):
-        super(Stream, self).connect()
-        self.name = u'kubectl.%s%s' % (self.pod, self.kubectl_args)
+
+class Connection(mitogen.parent.Connection):
+    options_class = Options
+    child_is_immediate_subprocess = True
+
+    # TODO: better way of capturing errors such as "No such container."
+    create_child_args = {
+        'merge_stdio': True
+    }
+
+    def _get_name(self):
+        return u'kubectl.%s%s' % (self.options.pod, self.options.kubectl_args)
 
     def get_boot_command(self):
-        bits = [self.kubectl_path] + self.kubectl_args + ['exec', '-it', self.pod]
-        return bits + ["--"] + super(Stream, self).get_boot_command()
+        bits = [
+            self.options.kubectl_path
+        ] + self.options.kubectl_args + [
+            'exec', '-it', self.options.pod
+        ]
+        return bits + ["--"] + super(Connection, self).get_boot_command()

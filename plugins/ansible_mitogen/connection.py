@@ -1,4 +1,4 @@
-# Copyright 2017, David Wilson
+# Copyright 2019, David Wilson
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
@@ -29,46 +29,73 @@
 from __future__ import absolute_import
 from __future__ import unicode_literals
 
+import errno
 import logging
 import os
-import random
+import pprint
 import stat
+import sys
 import time
 
-import jinja2.runtime
 import ansible.constants as C
 import ansible.errors
 import ansible.plugins.connection
 import ansible.utils.shlex
 
-import mitogen.unix
+import mitogen.core
+import mitogen.fork
 import mitogen.utils
 
+import ansible_mitogen.mixins
 import ansible_mitogen.parsing
 import ansible_mitogen.process
 import ansible_mitogen.services
 import ansible_mitogen.target
+import ansible_mitogen.transport_config
 
 
 LOG = logging.getLogger(__name__)
 
 
-def optional_secret(value):
+def get_remote_name(spec):
     """
-    Wrap `value` in :class:`mitogen.core.Secret` if it is not :data:`None`,
-    otherwise return :data:`None`.
+    Return the value to use for the "remote_name" parameter.
     """
-    if value is not None:
-        return mitogen.core.Secret(value)
+    if spec.mitogen_mask_remote_name():
+        return 'ansible'
+    return None
 
 
-def parse_python_path(s):
+def optional_int(value):
     """
-    Given the string set for ansible_python_interpeter, parse it using shell
-    syntax and return an appropriate argument vector.
+    Convert `value` to an integer if it is not :data:`None`, otherwise return
+    :data:`None`.
     """
-    if s:
-        return ansible.utils.shlex.shlex_split(s)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def convert_bool(obj):
+    if isinstance(obj, bool):
+        return obj
+    if str(obj).lower() in ('no', 'false', '0'):
+        return False
+    if str(obj).lower() not in ('yes', 'true', '1'):
+        raise ansible.errors.AnsibleConnectionFailure(
+            'expected yes/no/true/false/0/1, got %r' % (obj,)
+        )
+    return True
+
+
+def default(value, default):
+    """
+    Return `default` is `value` is :data:`None`, otherwise return `value`.
+    """
+    if value is None:
+        return default
+    return value
 
 
 def _connect_local(spec):
@@ -78,7 +105,7 @@ def _connect_local(spec):
     return {
         'method': 'local',
         'kwargs': {
-            'python_path': spec['python_path'],
+            'python_path': spec.python_path(),
         }
     }
 
@@ -92,24 +119,54 @@ def _connect_ssh(spec):
     else:
         check_host_keys = 'ignore'
 
+    # #334: tilde-expand private_key_file to avoid implementation difference
+    # between Python and OpenSSH.
+    private_key_file = spec.private_key_file()
+    if private_key_file is not None:
+        private_key_file = os.path.expanduser(private_key_file)
+
     return {
         'method': 'ssh',
         'kwargs': {
             'check_host_keys': check_host_keys,
-            'hostname': spec['remote_addr'],
-            'username': spec['remote_user'],
-            'password': optional_secret(spec['password']),
-            'port': spec['port'],
-            'python_path': spec['python_path'],
-            'identity_file': spec['private_key_file'],
+            'hostname': spec.remote_addr(),
+            'username': spec.remote_user(),
+            'compression': convert_bool(
+                default(spec.mitogen_ssh_compression(), True)
+            ),
+            'password': spec.password(),
+            'port': spec.port(),
+            'python_path': spec.python_path(),
+            'identity_file': private_key_file,
             'identities_only': False,
-            'ssh_path': spec['ssh_executable'],
-            'connect_timeout': spec['ansible_ssh_timeout'],
-            'ssh_args': spec['ssh_args'],
-            'ssh_debug_level': spec['mitogen_ssh_debug_level'],
+            'ssh_path': spec.ssh_executable(),
+            'connect_timeout': spec.ansible_ssh_timeout(),
+            'ssh_args': spec.ssh_args(),
+            'ssh_debug_level': spec.mitogen_ssh_debug_level(),
+            'remote_name': get_remote_name(spec),
+            'keepalive_count': (
+                spec.mitogen_ssh_keepalive_count() or 10
+            ),
+            'keepalive_interval': (
+                spec.mitogen_ssh_keepalive_interval() or 30
+            ),
         }
     }
 
+def _connect_buildah(spec):
+    """
+    Return ContextService arguments for a Buildah connection.
+    """
+    return {
+        'method': 'buildah',
+        'kwargs': {
+            'username': spec.remote_user(),
+            'container': spec.remote_addr(),
+            'python_path': spec.python_path(),
+            'connect_timeout': spec.ansible_ssh_timeout() or spec.timeout(),
+            'remote_name': get_remote_name(spec),
+        }
+    }
 
 def _connect_docker(spec):
     """
@@ -118,10 +175,11 @@ def _connect_docker(spec):
     return {
         'method': 'docker',
         'kwargs': {
-            'username': spec['remote_user'],
-            'container': spec['remote_addr'],
-            'python_path': spec['python_path'],
-            'connect_timeout': spec['ansible_ssh_timeout'] or spec['timeout'],
+            'username': spec.remote_user(),
+            'container': spec.remote_addr(),
+            'python_path': spec.python_path(),
+            'connect_timeout': spec.ansible_ssh_timeout() or spec.timeout(),
+            'remote_name': get_remote_name(spec),
         }
     }
 
@@ -133,10 +191,12 @@ def _connect_kubectl(spec):
     return {
         'method': 'kubectl',
         'kwargs': {
-            'pod': spec['remote_addr'],
-            'python_path': spec['python_path'],
-            'connect_timeout': spec['ansible_ssh_timeout'] or spec['timeout'],
-            'kubectl_args': spec['extra_args'],
+            'pod': spec.remote_addr(),
+            'python_path': spec.python_path(),
+            'connect_timeout': spec.ansible_ssh_timeout() or spec.timeout(),
+            'kubectl_path': spec.mitogen_kubectl_path(),
+            'kubectl_args': spec.extra_args(),
+            'remote_name': get_remote_name(spec),
         }
     }
 
@@ -148,10 +208,11 @@ def _connect_jail(spec):
     return {
         'method': 'jail',
         'kwargs': {
-            'username': spec['remote_user'],
-            'container': spec['remote_addr'],
-            'python_path': spec['python_path'],
-            'connect_timeout': spec['ansible_ssh_timeout'] or spec['timeout'],
+            'username': spec.remote_user(),
+            'container': spec.remote_addr(),
+            'python_path': spec.python_path(),
+            'connect_timeout': spec.ansible_ssh_timeout() or spec.timeout(),
+            'remote_name': get_remote_name(spec),
         }
     }
 
@@ -163,9 +224,11 @@ def _connect_lxc(spec):
     return {
         'method': 'lxc',
         'kwargs': {
-            'container': spec['remote_addr'],
-            'python_path': spec['python_path'],
-            'connect_timeout': spec['ansible_ssh_timeout'] or spec['timeout'],
+            'container': spec.remote_addr(),
+            'python_path': spec.python_path(),
+            'lxc_attach_path': spec.mitogen_lxc_attach_path(),
+            'connect_timeout': spec.ansible_ssh_timeout() or spec.timeout(),
+            'remote_name': get_remote_name(spec),
         }
     }
 
@@ -177,9 +240,11 @@ def _connect_lxd(spec):
     return {
         'method': 'lxd',
         'kwargs': {
-            'container': spec['remote_addr'],
-            'python_path': spec['python_path'],
-            'connect_timeout': spec['ansible_ssh_timeout'] or spec['timeout'],
+            'container': spec.remote_addr(),
+            'python_path': spec.python_path(),
+            'lxc_path': spec.mitogen_lxc_path(),
+            'connect_timeout': spec.ansible_ssh_timeout() or spec.timeout(),
+            'remote_name': get_remote_name(spec),
         }
     }
 
@@ -188,24 +253,24 @@ def _connect_machinectl(spec):
     """
     Return ContextService arguments for a machinectl connection.
     """
-    return _connect_setns(dict(spec, mitogen_kind='machinectl'))
+    return _connect_setns(spec, kind='machinectl')
 
 
-def _connect_setns(spec):
+def _connect_setns(spec, kind=None):
     """
     Return ContextService arguments for a mitogen_setns connection.
     """
     return {
         'method': 'setns',
         'kwargs': {
-            'container': spec['remote_addr'],
-            'username': spec['remote_user'],
-            'python_path': spec['python_path'],
-            'kind': spec['mitogen_kind'],
-            'docker_path': spec['mitogen_docker_path'],
-            'kubectl_path': spec['mitogen_kubectl_path'],
-            'lxc_info_path': spec['mitogen_lxc_info_path'],
-            'machinectl_path': spec['mitogen_machinectl_path'],
+            'container': spec.remote_addr(),
+            'username': spec.remote_user(),
+            'python_path': spec.python_path(),
+            'kind': kind or spec.mitogen_kind(),
+            'docker_path': spec.mitogen_docker_path(),
+            'lxc_path': spec.mitogen_lxc_path(),
+            'lxc_info_path': spec.mitogen_lxc_info_path(),
+            'machinectl_path': spec.mitogen_machinectl_path(),
         }
     }
 
@@ -218,11 +283,12 @@ def _connect_su(spec):
         'method': 'su',
         'enable_lru': True,
         'kwargs': {
-            'username': spec['become_user'],
-            'password': optional_secret(spec['become_pass']),
-            'python_path': spec['python_path'],
-            'su_path': spec['become_exe'],
-            'connect_timeout': spec['timeout'],
+            'username': spec.become_user(),
+            'password': spec.become_pass(),
+            'python_path': spec.python_path(),
+            'su_path': spec.become_exe(),
+            'connect_timeout': spec.timeout(),
+            'remote_name': get_remote_name(spec),
         }
     }
 
@@ -235,12 +301,13 @@ def _connect_sudo(spec):
         'method': 'sudo',
         'enable_lru': True,
         'kwargs': {
-            'username': spec['become_user'],
-            'password': optional_secret(spec['become_pass']),
-            'python_path': spec['python_path'],
-            'sudo_path': spec['become_exe'],
-            'connect_timeout': spec['timeout'],
-            'sudo_args': spec['sudo_args'],
+            'username': spec.become_user(),
+            'password': spec.become_pass(),
+            'python_path': spec.python_path(),
+            'sudo_path': spec.become_exe(),
+            'connect_timeout': spec.timeout(),
+            'sudo_args': spec.sudo_args(),
+            'remote_name': get_remote_name(spec),
         }
     }
 
@@ -253,11 +320,12 @@ def _connect_doas(spec):
         'method': 'doas',
         'enable_lru': True,
         'kwargs': {
-            'username': spec['become_user'],
-            'password': optional_secret(spec['become_pass']),
-            'python_path': spec['python_path'],
-            'doas_path': spec['become_exe'],
-            'connect_timeout': spec['timeout'],
+            'username': spec.become_user(),
+            'password': spec.become_pass(),
+            'python_path': spec.python_path(),
+            'doas_path': spec.become_exe(),
+            'connect_timeout': spec.timeout(),
+            'remote_name': get_remote_name(spec),
         }
     }
 
@@ -269,11 +337,12 @@ def _connect_mitogen_su(spec):
     return {
         'method': 'su',
         'kwargs': {
-            'username': spec['remote_user'],
-            'password': optional_secret(spec['password']),
-            'python_path': spec['python_path'],
-            'su_path': spec['become_exe'],
-            'connect_timeout': spec['timeout'],
+            'username': spec.remote_user(),
+            'password': spec.password(),
+            'python_path': spec.python_path(),
+            'su_path': spec.become_exe(),
+            'connect_timeout': spec.timeout(),
+            'remote_name': get_remote_name(spec),
         }
     }
 
@@ -285,12 +354,13 @@ def _connect_mitogen_sudo(spec):
     return {
         'method': 'sudo',
         'kwargs': {
-            'username': spec['remote_user'],
-            'password': optional_secret(spec['password']),
-            'python_path': spec['python_path'],
-            'sudo_path': spec['become_exe'],
-            'connect_timeout': spec['timeout'],
-            'sudo_args': spec['sudo_args'],
+            'username': spec.remote_user(),
+            'password': spec.password(),
+            'python_path': spec.python_path(),
+            'sudo_path': spec.become_exe(),
+            'connect_timeout': spec.timeout(),
+            'sudo_args': spec.sudo_args(),
+            'remote_name': get_remote_name(spec),
         }
     }
 
@@ -302,11 +372,12 @@ def _connect_mitogen_doas(spec):
     return {
         'method': 'doas',
         'kwargs': {
-            'username': spec['remote_user'],
-            'password': optional_secret(spec['password']),
-            'python_path': spec['python_path'],
-            'doas_path': spec['become_exe'],
-            'connect_timeout': spec['timeout'],
+            'username': spec.remote_user(),
+            'password': spec.password(),
+            'python_path': spec.python_path(),
+            'doas_path': spec.ansible_doas_exe(),
+            'connect_timeout': spec.timeout(),
+            'remote_name': get_remote_name(spec),
         }
     }
 
@@ -315,6 +386,7 @@ def _connect_mitogen_doas(spec):
 #: generating ContextService keyword arguments matching a connection
 #: specification.
 CONNECTION_METHOD = {
+    'buildah': _connect_buildah,
     'docker': _connect_docker,
     'kubectl': _connect_kubectl,
     'jail': _connect_jail,
@@ -324,6 +396,7 @@ CONNECTION_METHOD = {
     'machinectl': _connect_machinectl,
     'setns': _connect_setns,
     'ssh': _connect_ssh,
+    'smart': _connect_ssh,  # issue #548.
     'su': _connect_su,
     'sudo': _connect_sudo,
     'doas': _connect_doas,
@@ -333,110 +406,31 @@ CONNECTION_METHOD = {
 }
 
 
-def config_from_play_context(transport, inventory_name, connection):
-    """
-    Return a dict representing all important connection configuration, allowing
-    the same functions to work regardless of whether configuration came from
-    play_context (direct connection) or host vars (mitogen_via=).
-    """
-    return {
-        'transport': transport,
-        'inventory_name': inventory_name,
-        'remote_addr': connection._play_context.remote_addr,
-        'remote_user': connection._play_context.remote_user,
-        'become': connection._play_context.become,
-        'become_method': connection._play_context.become_method,
-        'become_user': connection._play_context.become_user,
-        'become_pass': connection._play_context.become_pass,
-        'password': connection._play_context.password,
-        'port': connection._play_context.port,
-        'python_path': parse_python_path(
-            connection.get_task_var('ansible_python_interpreter',
-                                    default='/usr/bin/python')
-        ),
-        'private_key_file': connection._play_context.private_key_file,
-        'ssh_executable': connection._play_context.ssh_executable,
-        'timeout': connection._play_context.timeout,
-        'ansible_ssh_timeout':
-            connection.get_task_var('ansible_ssh_timeout',
-                                    default=C.DEFAULT_TIMEOUT),
-        'ssh_args': [
-            mitogen.core.to_text(term)
-            for s in (
-                getattr(connection._play_context, 'ssh_args', ''),
-                getattr(connection._play_context, 'ssh_common_args', ''),
-                getattr(connection._play_context, 'ssh_extra_args', '')
-            )
-            for term in ansible.utils.shlex.shlex_split(s or '')
-        ],
-        'become_exe': connection._play_context.become_exe,
-        'sudo_args': [
-            mitogen.core.to_text(term)
-            for s in (
-                connection._play_context.sudo_flags,
-                connection._play_context.become_flags
-            )
-            for term in ansible.utils.shlex.shlex_split(s or '')
-        ],
-        'mitogen_via':
-            connection.get_task_var('mitogen_via'),
-        'mitogen_kind':
-            connection.get_task_var('mitogen_kind'),
-        'mitogen_docker_path':
-            connection.get_task_var('mitogen_docker_path'),
-        'mitogen_kubectl_path':
-            connection.get_task_var('mitogen_kubectl_path'),
-        'mitogen_lxc_info_path':
-            connection.get_task_var('mitogen_lxc_info_path'),
-        'mitogen_machinectl_path':
-            connection.get_task_var('mitogen_machinectl_path'),
-        'mitogen_ssh_debug_level':
-            connection.get_task_var('mitogen_ssh_debug_level'),
-        'extra_args':
-            connection.get_extra_args(),
-    }
-
-
-def config_from_hostvars(transport, inventory_name, connection,
-                         hostvars, become_user):
-    """
-    Override config_from_play_context() to take equivalent information from
-    host vars.
-    """
-    config = config_from_play_context(transport, inventory_name, connection)
-    hostvars = dict(hostvars)
-    return dict(config, **{
-        'remote_addr': hostvars.get('ansible_host', inventory_name),
-        'become': bool(become_user),
-        'become_user': become_user,
-        'become_pass': None,
-        'remote_user': hostvars.get('ansible_user'),  # TODO
-        'password': (hostvars.get('ansible_ssh_pass') or
-                     hostvars.get('ansible_password')),
-        'port': hostvars.get('ansible_port'),
-        'python_path': parse_python_path(hostvars.get('ansible_python_interpreter')),
-        'private_key_file': (hostvars.get('ansible_ssh_private_key_file') or
-                             hostvars.get('ansible_private_key_file')),
-        'mitogen_via': hostvars.get('mitogen_via'),
-        'mitogen_kind': hostvars.get('mitogen_kind'),
-        'mitogen_docker_path': hostvars.get('mitogen_docker_path'),
-        'mitogen_kubectl_path': hostvars.get('mitogen_kubectl_path'),
-        'mitogen_lxc_info_path': hostvars.get('mitogen_lxc_info_path'),
-        'mitogen_machinectl_path': hostvars.get('mitogen_machinctl_path'),
-    })
-
-
 class CallChain(mitogen.parent.CallChain):
+    """
+    Extend :class:`mitogen.parent.CallChain` to additionally cause the
+    associated :class:`Connection` to be reset if a ChannelError occurs.
+
+    This only catches failures that occur while a call is pending, it is a
+    stop-gap until a more general method is available to notice connection in
+    every situation.
+    """
     call_aborted_msg = (
         'Mitogen was disconnected from the remote environment while a call '
         'was in-progress. If you feel this is in error, please file a bug. '
         'Original error was: %s'
     )
 
+    def __init__(self, connection, context, pipelined=False):
+        super(CallChain, self).__init__(context, pipelined)
+        #: The connection to reset on CallError.
+        self._connection = connection
+
     def _rethrow(self, recv):
         try:
             return recv.get().unpickle()
         except mitogen.core.ChannelError as e:
+            self._connection.reset()
             raise ansible.errors.AnsibleConnectionFailure(
                 self.call_aborted_msg % (e,)
             )
@@ -455,15 +449,10 @@ class CallChain(mitogen.parent.CallChain):
 
 
 class Connection(ansible.plugins.connection.ConnectionBase):
-    #: mitogen.master.Broker for this worker.
-    broker = None
-
-    #: mitogen.master.Router for this worker.
-    router = None
-
-    #: mitogen.parent.Context representing the parent Context, which is
-    #: presently always the connection multiplexer process.
-    parent = None
+    #: The :class:`ansible_mitogen.process.Binding` representing the connection
+    #: multiplexer this connection's target is assigned to. :data:`None` when
+    #: disconnected.
+    binding = None
 
     #: mitogen.parent.Context for the target account on the target, possibly
     #: reached via become.
@@ -514,13 +503,6 @@ class Connection(ansible.plugins.connection.ConnectionBase):
     #: matching vanilla Ansible behaviour.
     loader_basedir = None
 
-    def __init__(self, play_context, new_stdin, **kwargs):
-        assert ansible_mitogen.process.MuxProcess.unix_listener_path, (
-            'Mitogen connection types may only be instantiated '
-            'while the "mitogen" strategy is active.'
-        )
-        super(Connection, self).__init__(play_context, new_stdin)
-
     def __del__(self):
         """
         Ansible cannot be trusted to always call close() e.g. the synchronize
@@ -550,11 +532,72 @@ class Connection(ansible.plugins.connection.ConnectionBase):
         self.host_vars = task_vars['hostvars']
         self.delegate_to_hostname = delegate_to_hostname
         self.loader_basedir = loader_basedir
-        self.close(new_task=True)
+        self._mitogen_reset(mode='put')
+
+    def _get_task_vars(self):
+        """
+        More information is needed than normally provided to an Ansible
+        connection.  For proxied connections, intermediary configuration must
+        be inferred, and for any connection the configured Python interpreter
+        must be known.
+
+        There is no clean way to access this information that would not deviate
+        from the running Ansible version. The least invasive method known is to
+        reuse the running task's task_vars dict.
+
+        This method walks the stack to find task_vars of the Action plugin's
+        run(), or if no Action is present, from Strategy's _execute_meta(), as
+        in the case of 'meta: reset_connection'. The stack is walked in
+        addition to subclassing Action.run()/on_action_run(), as it is possible
+        for new connections to be constructed in addition to the preconstructed
+        connection passed into any running action.
+        """
+        f = sys._getframe()
+
+        while f:
+            if f.f_code.co_name == 'run':
+                f_locals = f.f_locals
+                f_self = f_locals.get('self')
+                if isinstance(f_self, ansible_mitogen.mixins.ActionModuleMixin):
+                    task_vars = f_locals.get('task_vars')
+                    if task_vars:
+                        LOG.debug('recovered task_vars from Action')
+                        return task_vars
+            elif f.f_code.co_name == '_execute_meta':
+                f_all_vars = f.f_locals.get('all_vars')
+                if isinstance(f_all_vars, dict):
+                    LOG.debug('recovered task_vars from meta:')
+                    return f_all_vars
+
+            f = f.f_back
+
+        LOG.warning('could not recover task_vars. This means some connection '
+                    'settings may erroneously be reset to their defaults. '
+                    'Please report a bug if you encounter this message.')
 
     def get_task_var(self, key, default=None):
-        if self._task_vars and key in self._task_vars:
-            return self._task_vars[key]
+        """
+        Fetch the value of a task variable related to connection configuration,
+        or, if delegate_to is active, fetch the same variable via HostVars for
+        the delegated-to machine.
+
+        When running with delegate_to, Ansible tasks have variables associated
+        with the original machine, not the delegated-to machine, therefore it
+        does not make sense to extract connection-related configuration for the
+        delegated-to machine from them.
+        """
+        task_vars = self._task_vars or self._get_task_vars()
+        if task_vars is not None:
+            if self.delegate_to_hostname is None:
+                if key in task_vars:
+                    return task_vars[key]
+            else:
+                delegated_vars = task_vars['ansible_delegated_vars']
+                if self.delegate_to_hostname in delegated_vars:
+                    task_vars = delegated_vars[self.delegate_to_hostname]
+                    if key in task_vars:
+                        return task_vars[key]
+
         return default
 
     @property
@@ -562,92 +605,101 @@ class Connection(ansible.plugins.connection.ConnectionBase):
         self._connect()
         return self.init_child_result['home_dir']
 
+    def get_binding(self):
+        """
+        Return the :class:`ansible_mitogen.process.Binding` representing the
+        process that hosts the physical connection and services (context
+        establishment, file transfer, ..) for our desired target.
+        """
+        assert self.binding is not None
+        return self.binding
+
     @property
     def connected(self):
         return self.context is not None
 
-    def _config_from_via(self, via_spec):
+    def _spec_from_via(self, proxied_inventory_name, via_spec):
         """
         Produce a dict connection specifiction given a string `via_spec`, of
-        the form `[become_user@]inventory_hostname`.
+        the form `[[become_method:]become_user@]inventory_hostname`.
         """
         become_user, _, inventory_name = via_spec.rpartition('@')
-        via_vars = self.host_vars[inventory_name]
-        if isinstance(via_vars, jinja2.runtime.Undefined):
+        become_method, _, become_user = become_user.rpartition(':')
+
+        # must use __contains__ to avoid a TypeError for a missing host on
+        # Ansible 2.3.
+        if self.host_vars is None or inventory_name not in self.host_vars:
             raise ansible.errors.AnsibleConnectionFailure(
                 self.unknown_via_msg % (
                     via_spec,
-                    inventory_name,
+                    proxied_inventory_name,
                 )
             )
 
-        return config_from_hostvars(
-            transport=via_vars.get('ansible_connection', 'ssh'),
+        via_vars = self.host_vars[inventory_name]
+        return ansible_mitogen.transport_config.MitogenViaSpec(
             inventory_name=inventory_name,
-            connection=self,
-            hostvars=via_vars,
+            play_context=self._play_context,
+            host_vars=dict(via_vars),  # TODO: make it lazy
+            become_method=become_method or None,
             become_user=become_user or None,
         )
 
     unknown_via_msg = 'mitogen_via=%s of %s specifies an unknown hostname'
     via_cycle_msg = 'mitogen_via=%s of %s creates a cycle (%s)'
 
-    def _stack_from_config(self, config, stack=(), seen_names=()):
-        if config['inventory_name'] in seen_names:
+    def _stack_from_spec(self, spec, stack=(), seen_names=()):
+        """
+        Return a tuple of ContextService parameter dictionaries corresponding
+        to the connection described by `spec`, and any connection referenced by
+        its `mitogen_via` or `become` fields. Each element is a dict of the
+        form::
+
+            {
+                # Optional. If present and `True`, this hop is elegible for
+                # interpreter recycling.
+                "enable_lru": True,
+                # mitogen.master.Router method name.
+                "method": "ssh",
+                # mitogen.master.Router method kwargs.
+                "kwargs": {
+                    "hostname": "..."
+                }
+            }
+
+        :param ansible_mitogen.transport_config.Spec spec:
+            Connection specification.
+        :param tuple stack:
+            Stack elements from parent call (used for recursion).
+        :param tuple seen_names:
+            Inventory hostnames from parent call (cycle detection).
+        :returns:
+            Tuple `(stack, seen_names)`.
+        """
+        if spec.inventory_name() in seen_names:
             raise ansible.errors.AnsibleConnectionFailure(
                 self.via_cycle_msg % (
-                    config['mitogen_via'],
-                    config['inventory_name'],
+                    spec.mitogen_via(),
+                    spec.inventory_name(),
                     ' -> '.join(reversed(
-                        seen_names + (config['inventory_name'],)
+                        seen_names + (spec.inventory_name(),)
                     )),
                 )
             )
 
-        if config['mitogen_via']:
-            stack, seen_names = self._stack_from_config(
-                self._config_from_via(config['mitogen_via']),
+        if spec.mitogen_via():
+            stack = self._stack_from_spec(
+                self._spec_from_via(spec.inventory_name(), spec.mitogen_via()),
                 stack=stack,
-                seen_names=seen_names + (config['inventory_name'],)
+                seen_names=seen_names + (spec.inventory_name(),),
             )
 
-        stack += (CONNECTION_METHOD[config['transport']](config),)
-        if config['become']:
-            stack += (CONNECTION_METHOD[config['become_method']](config),)
+        stack += (CONNECTION_METHOD[spec.transport()](spec),)
+        if spec.become() and ((spec.become_user() != spec.remote_user()) or
+                              C.BECOME_ALLOW_SAME_USER):
+            stack += (CONNECTION_METHOD[spec.become_method()](spec),)
 
-        return stack, seen_names
-
-    def _connect_broker(self):
-        """
-        Establish a reference to the Broker, Router and parent context used for
-        connections.
-        """
-        if not self.broker:
-            self.broker = mitogen.master.Broker()
-            self.router, self.parent = mitogen.unix.connect(
-                path=ansible_mitogen.process.MuxProcess.unix_listener_path,
-                broker=self.broker,
-            )
-
-    def _config_from_direct_connection(self):
-        """
-        """
-        return config_from_play_context(
-            transport=self.transport,
-            inventory_name=self.inventory_hostname,
-            connection=self
-        )
-
-    def _config_from_delegate_to(self):
-        return config_from_hostvars(
-            transport=self._play_context.connection,
-            inventory_name=self.delegate_to_hostname,
-            connection=self,
-            hostvars=self.host_vars[self.delegate_to_hostname],
-            become_user=(self._play_context.become_user
-                         if self._play_context.become
-                         else None),
-        )
+        return stack
 
     def _build_stack(self):
         """
@@ -656,25 +708,36 @@ class Connection(ansible.plugins.connection.ConnectionBase):
         additionally used by the integration tests "mitogen_get_stack" action
         to fetch the would-be connection configuration.
         """
-        if self.delegate_to_hostname is not None:
-            target_config = self._config_from_delegate_to()
-        else:
-            target_config = self._config_from_direct_connection()
-
-        stack, _ = self._stack_from_config(target_config)
-        return stack
+        spec = ansible_mitogen.transport_config.PlayContextSpec(
+            connection=self,
+            play_context=self._play_context,
+            transport=self.transport,
+            inventory_name=self.inventory_hostname,
+        )
+        stack = self._stack_from_spec(spec)
+        return spec.inventory_name(), stack
 
     def _connect_stack(self, stack):
         """
         Pass `stack` to ContextService, requesting a copy of the context object
-        representing the target. If no connection exists yet, ContextService
-        will establish it before returning it or throwing an error.
+        representing the last tuple element. If no connection exists yet,
+        ContextService will recursively establish it before returning it or
+        throwing an error.
+
+        See :meth:`ansible_mitogen.services.ContextService.get` docstring for
+        description of the returned dictionary.
         """
-        dct = self.parent.call_service(
-            service_name='ansible_mitogen.services.ContextService',
-            method_name='get',
-            stack=mitogen.utils.cast(list(stack)),
-        )
+        try:
+            dct = mitogen.service.call(
+                call_context=self.binding.get_service_context(),
+                service_name='ansible_mitogen.services.ContextService',
+                method_name='get',
+                stack=mitogen.utils.cast(list(stack)),
+            )
+        except mitogen.core.CallError:
+            LOG.warning('Connection failed; stack configuration was:\n%s',
+                        pprint.pformat(stack))
+            raise
 
         if dct['msg']:
             if dct['method_name'] in self.become_methods:
@@ -682,7 +745,7 @@ class Connection(ansible.plugins.connection.ConnectionBase):
             raise ansible.errors.AnsibleConnectionFailure(dct['msg'])
 
         self.context = dct['context']
-        self.chain = CallChain(self.context, pipelined=True)
+        self.chain = CallChain(self, self.context, pipelined=True)
         if self._play_context.become:
             self.login_context = dct['via']
         else:
@@ -691,23 +754,13 @@ class Connection(ansible.plugins.connection.ConnectionBase):
         self.init_child_result = dct['init_child_result']
 
     def get_good_temp_dir(self):
+        """
+        Return the 'good temporary directory' as discovered by
+        :func:`ansible_mitogen.target.init_child` immediately after
+        ContextService constructed the target context.
+        """
         self._connect()
         return self.init_child_result['good_temp_dir']
-
-    def _generate_tmp_path(self):
-        return os.path.join(
-            self.get_good_temp_dir(),
-            'ansible_mitogen_action_%016x' % (
-                random.getrandbits(8*8),
-            )
-        )
-
-    def _make_tmp_path(self):
-        assert getattr(self._shell, 'tmpdir', None) is None
-        self._shell.tmpdir = self._generate_tmp_path()
-        LOG.debug('Temporary directory: %r', self._shell.tmpdir)
-        self.get_chain().call_no_reply(os.mkdir, self._shell.tmpdir)
-        return self._shell.tmpdir
 
     def _connect(self):
         """
@@ -723,41 +776,89 @@ class Connection(ansible.plugins.connection.ConnectionBase):
         if self.connected:
             return
 
-        self._connect_broker()
-        stack = self._build_stack()
+        inventory_name, stack = self._build_stack()
+        worker_model = ansible_mitogen.process.get_worker_model()
+        self.binding = worker_model.get_binding(inventory_name)
         self._connect_stack(stack)
 
-    def close(self, new_task=False):
+    def _mitogen_reset(self, mode):
         """
-        Arrange for the mitogen.master.Router running in the worker to
-        gracefully shut down, and wait for shutdown to complete. Safe to call
-        multiple times.
-        """
-        if getattr(self._shell, 'tmpdir', None) is not None:
-            # Avoid CallChain to ensure exception is logged on failure.
-            self.context.call_no_reply(
-                ansible_mitogen.target.prune_tree,
-                self._shell.tmpdir,
-            )
-            self._shell.tmpdir = None
+        Forget everything we know about the connected context. This function
+        cannot be called _reset() since that name is used as a public API by
+        Ansible 2.4 wait_for_connection plug-in.
 
-        if self.context:
-            self.chain.reset()
-            self.parent.call_service(
-                service_name='ansible_mitogen.services.ContextService',
-                method_name='put',
-                context=self.context
-            )
+        :param str mode:
+            Name of ContextService method to use to discard the context, either
+            'put' or 'reset'.
+        """
+        if not self.context:
+            return
+
+        self.chain.reset()
+        mitogen.service.call(
+            call_context=self.binding.get_service_context(),
+            service_name='ansible_mitogen.services.ContextService',
+            method_name=mode,
+            context=self.context
+        )
 
         self.context = None
         self.login_context = None
         self.init_child_result = None
         self.chain = None
-        if self.broker and not new_task:
-            self.broker.shutdown()
-            self.broker.join()
-            self.broker = None
-            self.router = None
+
+    def close(self):
+        """
+        Arrange for the mitogen.master.Router running in the worker to
+        gracefully shut down, and wait for shutdown to complete. Safe to call
+        multiple times.
+        """
+        self._mitogen_reset(mode='put')
+        if self.binding:
+            self.binding.close()
+            self.binding = None
+
+    def _reset_find_task_vars(self):
+        """
+        Monsterous hack: since "meta: reset_connection" does not run from an
+        action, we cannot capture task variables via :meth:`on_action_run`.
+        Instead walk the parent frames searching for the `all_vars` local from
+        StrategyBase._execute_meta(). If this fails, just leave task_vars
+        unset, likely causing a subtly wrong configuration to be selected.
+        """
+        frame = sys._getframe()
+        while frame and not self._task_vars:
+            self._task_vars = frame.f_locals.get('all_vars')
+            frame = frame.f_back
+
+    reset_compat_msg = (
+        'Mitogen only supports "reset_connection" on Ansible 2.5.6 or later'
+    )
+
+    def reset(self):
+        """
+        Explicitly terminate the connection to the remote host. This discards
+        any local state we hold for the connection, returns the Connection to
+        the 'disconnected' state, and informs ContextService the connection is
+        bad somehow, and should be shut down and discarded.
+        """
+        if self._task_vars is None:
+            self._reset_find_task_vars()
+
+        if self._play_context.remote_addr is None:
+            # <2.5.6 incorrectly populate PlayContext for reset_connection
+            # https://github.com/ansible/ansible/issues/27520
+            raise ansible.errors.AnsibleConnectionFailure(
+                self.reset_compat_msg
+            )
+
+        self._connect()
+        self._mitogen_reset(mode='reset')
+        self.binding.close()
+        self.binding = None
+
+    # Compatibility with Ansible 2.4 wait_for_connection plug-in.
+    _reset = reset
 
     def get_chain(self, use_login=False, use_fork=False):
         """
@@ -774,21 +875,20 @@ class Connection(ansible.plugins.connection.ConnectionBase):
         self._connect()
         if use_login:
             return self.login_context.default_call_chain
-        if use_fork:
+        # See FORK_SUPPORTED comments in target.py.
+        if use_fork and self.init_child_result['fork_context'] is not None:
             return self.init_child_result['fork_context'].default_call_chain
         return self.chain
 
-    def create_fork_child(self):
+    def spawn_isolated_child(self):
         """
-        Fork a new child off the target context. The actual fork occurs from
-        the 'virginal fork parent', which does not any Ansible modules prior to
-        fork, to avoid conflicts resulting from custom module_utils paths.
+        Fork or launch a new child off the target context.
 
         :returns:
             mitogen.core.Context of the new child.
         """
         return self.get_chain(use_fork=True).call(
-            ansible_mitogen.target.create_fork_child
+            ansible_mitogen.target.spawn_isolated_child
         )
 
     def get_extra_args(self):
@@ -834,9 +934,9 @@ class Connection(ansible.plugins.connection.ConnectionBase):
             emulate_tty=emulate_tty,
         )
 
-        stderr += 'Shared connection to %s closed.%s' % (
-            self._play_context.remote_addr,
-            ('\r\n' if emulate_tty else '\n'),
+        stderr += b'Shared connection to %s closed.%s' % (
+            self._play_context.remote_addr.encode(),
+            (b'\r\n' if emulate_tty else b'\n'),
         )
         return rc, stdout, stderr
 
@@ -850,11 +950,13 @@ class Connection(ansible.plugins.connection.ConnectionBase):
         :param str out_path:
             Local filesystem path to write.
         """
-        output = self.get_chain().call(
-            ansible_mitogen.target.read_path,
-            mitogen.utils.cast(in_path),
+        self._connect()
+        ansible_mitogen.target.transfer_file(
+            context=self.context,
+            # in_path may be AnsibleUnicode
+            in_path=mitogen.utils.cast(in_path),
+            out_path=out_path
         )
-        ansible_mitogen.target.write_path(out_path, output)
 
     def put_data(self, out_path, data, mode=None, utimes=None):
         """
@@ -882,6 +984,11 @@ class Connection(ansible.plugins.connection.ConnectionBase):
     #: slightly more overhead, so just randomly subtract 4KiB.
     SMALL_FILE_LIMIT = mitogen.core.CHUNK_SIZE - 4096
 
+    def _throw_io_error(self, e, path):
+        if e.args[0] == errno.ENOENT:
+            s = 'file or module does not exist: ' + path
+            raise ansible.errors.AnsibleFileNotFound(s)
+
     def put_file(self, in_path, out_path):
         """
         Implement put_file() by streamily transferring the file via
@@ -892,7 +999,12 @@ class Connection(ansible.plugins.connection.ConnectionBase):
         :param str out_path:
             Remote filesystem path to write.
         """
-        st = os.stat(in_path)
+        try:
+            st = os.stat(in_path)
+        except OSError as e:
+            self._throw_io_error(e, in_path)
+            raise
+
         if not stat.S_ISREG(st.st_mode):
             raise IOError('%r is not a regular file.' % (in_path,))
 
@@ -900,18 +1012,24 @@ class Connection(ansible.plugins.connection.ConnectionBase):
         # rather than introducing an extra RTT for the child to request it from
         # FileService.
         if st.st_size <= self.SMALL_FILE_LIMIT:
-            fp = open(in_path, 'rb')
             try:
-                s = fp.read(self.SMALL_FILE_LIMIT + 1)
-            finally:
-                fp.close()
+                fp = open(in_path, 'rb')
+                try:
+                    s = fp.read(self.SMALL_FILE_LIMIT + 1)
+                finally:
+                    fp.close()
+            except OSError:
+                self._throw_io_error(e, in_path)
+                raise
 
             # Ensure did not grow during read.
             if len(s) == st.st_size:
                 return self.put_data(out_path, s, mode=st.st_mode,
                                      utimes=(st.st_atime, st.st_mtime))
 
-        self.parent.call_service(
+        self._connect()
+        mitogen.service.call(
+            call_context=self.binding.get_service_context(),
             service_name='mitogen.service.FileService',
             method_name='register',
             path=mitogen.utils.cast(in_path)
@@ -923,7 +1041,7 @@ class Connection(ansible.plugins.connection.ConnectionBase):
         # file alive, but that requires more work.
         self.get_chain().call(
             ansible_mitogen.target.transfer_file,
-            context=self.parent,
+            context=self.binding.get_child_service_context(),
             in_path=in_path,
             out_path=out_path
         )

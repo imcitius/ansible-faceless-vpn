@@ -26,6 +26,8 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
+# !mitogen: minify_safe
+
 import sys
 
 try:
@@ -40,15 +42,10 @@ if sys.version_info < (2, 7, 11):
 else:
     import tokenize
 
-try:
-    from functools import lru_cache
-except ImportError:
-    from mitogen.compat.functools import lru_cache
 
-
-@lru_cache()
 def minimize_source(source):
-    """Remove comments and docstrings from Python `source`, preserving line
+    """
+    Remove comments and docstrings from Python `source`, preserving line
     numbers and syntax of empty blocks.
 
     :param str source:
@@ -66,7 +63,8 @@ def minimize_source(source):
 
 
 def strip_comments(tokens):
-    """Drop comment tokens from a `tokenize` stream.
+    """
+    Drop comment tokens from a `tokenize` stream.
 
     Comments on lines 1-2 are kept, to preserve hashbang and encoding.
     Trailing whitespace is remove from all lines.
@@ -88,7 +86,8 @@ def strip_comments(tokens):
 
 
 def strip_docstrings(tokens):
-    """Replace docstring tokens with NL tokens in a `tokenize` stream.
+    """
+    Replace docstring tokens with NL tokens in a `tokenize` stream.
 
     Any STRING token not part of an expression is deemed a docstring.
     Indented docstrings are not yet recognised.
@@ -123,7 +122,8 @@ def strip_docstrings(tokens):
 
 
 def reindent(tokens, indent=' '):
-    """Replace existing indentation in a token steam, with `indent`.
+    """
+    Replace existing indentation in a token steam, with `indent`.
     """
     old_levels = []
     old_level = 0

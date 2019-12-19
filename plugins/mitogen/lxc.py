@@ -1,4 +1,4 @@
-# Copyright 2017, David Wilson
+# Copyright 2019, David Wilson
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
@@ -26,16 +26,26 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
-import logging
+# !mitogen: minify_safe
 
 import mitogen.core
 import mitogen.parent
 
 
-LOG = logging.getLogger(__name__)
+class Options(mitogen.parent.Options):
+    container = None
+    lxc_attach_path = 'lxc-attach'
+
+    def __init__(self, container, lxc_attach_path=None, **kwargs):
+        super(Options, self).__init__(**kwargs)
+        self.container = container
+        if lxc_attach_path:
+            self.lxc_attach_path = lxc_attach_path
 
 
-class Stream(mitogen.parent.Stream):
+class Connection(mitogen.parent.Connection):
+    options_class = Options
+
     child_is_immediate_subprocess = False
     create_child_args = {
         # If lxc-attach finds any of stdin, stdout, stderr connected to a TTY,
@@ -45,24 +55,20 @@ class Stream(mitogen.parent.Stream):
         'merge_stdio': True
     }
 
-    container = None
-    lxc_attach_path = 'lxc-attach'
+    eof_error_hint = (
+        'Note: many versions of LXC do not report program execution failure '
+        'meaningfully. Please check the host logs (/var/log) for more '
+        'information.'
+    )
 
-    def construct(self, container, lxc_attach_path=None, **kwargs):
-        super(Stream, self).construct(**kwargs)
-        self.container = container
-        if lxc_attach_path:
-            self.lxc_attach_path = lxc_attach_path
-
-    def connect(self):
-        super(Stream, self).connect()
-        self.name = u'lxc.' + self.container
+    def _get_name(self):
+        return u'lxc.' + self.options.container
 
     def get_boot_command(self):
         bits = [
-            self.lxc_attach_path,
+            self.options.lxc_attach_path,
             '--clear-env',
-            '--name', self.container,
+            '--name', self.options.container,
             '--',
         ]
-        return bits + super(Stream, self).get_boot_command()
+        return bits + super(Connection, self).get_boot_command()

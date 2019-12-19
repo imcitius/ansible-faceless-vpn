@@ -26,19 +26,48 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
-from __future__ import absolute_import
-import os.path
-import sys
+# !mitogen: minify_safe
 
-try:
-    import ansible_mitogen.connection
-except ImportError:
-    base_dir = os.path.dirname(__file__)
-    sys.path.insert(0, os.path.abspath(os.path.join(base_dir, '../../..')))
-    del base_dir
+import logging
 
-import ansible_mitogen.connection
+import mitogen.core
+import mitogen.parent
 
 
-class Connection(ansible_mitogen.connection.Connection):
-    transport = 'machinectl'
+LOG = logging.getLogger(__name__)
+
+
+class Options(mitogen.parent.Options):
+    container = None
+    username = None
+    buildah_path = 'buildah'
+
+    def __init__(self, container=None, buildah_path=None, username=None,
+                 **kwargs):
+        super(Options, self).__init__(**kwargs)
+        assert container is not None
+        self.container = container
+        if buildah_path:
+            self.buildah_path = buildah_path
+        if username:
+            self.username = username
+
+
+class Connection(mitogen.parent.Connection):
+    options_class = Options
+    child_is_immediate_subprocess = False
+
+    # TODO: better way of capturing errors such as "No such container."
+    create_child_args = {
+        'merge_stdio': True
+    }
+
+    def _get_name(self):
+        return u'buildah.' + self.options.container
+
+    def get_boot_command(self):
+        args = [self.options.buildah_path, 'run']
+        if self.options.username:
+            args += ['--user=' + self.options.username]
+        args += ['--', self.options.container]
+        return args + super(Connection, self).get_boot_command()

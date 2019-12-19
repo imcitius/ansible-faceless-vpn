@@ -1,4 +1,4 @@
-# Copyright 2017, David Wilson
+# Copyright 2019, David Wilson
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
@@ -81,6 +81,6 @@ class Connection(ansible_mitogen.connection.Connection):
         from WorkerProcess, we must emulate that.
         """
         return dict_diff(
-            old=ansible_mitogen.process.MuxProcess.original_env,
+            old=ansible_mitogen.process.MuxProcess.cls_original_env,
             new=os.environ,
         )
