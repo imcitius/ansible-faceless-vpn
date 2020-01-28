@@ -1,0 +1,6 @@
+[faceless-vpn-server-ike]
+3.120.26.3
+18.185.24.164
+
+[all:vars]
+project=faceless-prod

@@ -1,0 +1,22 @@
+---
+
+- hosts: all
+
+  roles:
+    - facelessvpnserver-system.role
+    - facelessvpnserver-strongswan.role
+    - facelessvpnserver-freeradius.role
+
+  pre_tasks:
+
+    - name: Put SELinux in permissive mode, logging actions that would be blocked.
+      selinux:
+        state: disabled
+
+    - name: "prepare install epel-release"
+      raw: yum -y install epel-release
+      changed_when: false
+
+    - name: "prepare: install python2-pip"
+      raw: yum -y install python2-pip
+      changed_when: false
