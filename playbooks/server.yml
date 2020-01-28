@@ -1,6 +1,7 @@
 ---
 
 - hosts: all
+  gather_facts: false
 
   roles:
     - facelessvpnserver-system.role
@@ -17,6 +18,9 @@
         search_regex: OpenSSH
         delay: 10
         timeout: 300
+
+    - name: gather facts
+      setup:
 
     - name: Put SELinux in permissive mode, logging actions that would be blocked.
       selinux:
