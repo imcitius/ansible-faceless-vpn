@@ -1,0 +1,29 @@
+  post_tasks:
+
+    - name: Add server to DNS
+      cloudflare_dns:
+        zone: "{{global_domain_prefix}}"
+        record: "{{ vpn_server_identifier }}"
+        type: A
+        value: "{{ inventory_hostname }}"
+        account_email: "{{ cloudflare_api_email }}"
+        account_api_token: "{{ cloudflare_api_token }}"
+      register: record
+      delegate_to: localhost
+      become: false
+      tags: cf
+
+    - debug: var=record
+      tags: cf
+
+    - name: Create a my.com CNAME record to example.com
+      cloudflare_dns:
+        zone: "{{ aws_region }.{{ike_domain_prefix}}.{{global_domain_prefix}}"
+        type: CNAME
+        value: "{{ vpn_server_identifier }}.{{global_domain_prefix}}"
+        account_email: "{{ cloudflare_api_email }}"
+        account_api_token: "{{ cloudflare_api_token }}"
+        state: present
+      delegate_to: localhost
+      become: false
+      tags: cf

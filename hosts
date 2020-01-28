@@ -1,0 +1,5 @@
+[faceless-vpn-server-ike]
+35.159.33.117 aws_region=eu-central-1
+[all:vars]
+project=faceless-prod
+
