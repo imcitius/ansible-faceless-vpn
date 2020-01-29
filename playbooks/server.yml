@@ -9,13 +9,8 @@
     - facelessvpnserver-freeradius.role
 
   pre_tasks:
-
-    # Do not assume the inventory_hostname is resolvable and delay 10 seconds at start
-    - name: Wait 300 seconds for port 22 to become open and contain "OpenSSH"
-      wait_for:
-        port: 22
-        host: '{{ (ansible_ssh_host|default(ansible_host))|default(inventory_hostname) }}'
-        search_regex: OpenSSH
+    - name: Wait for server up
+      wait_for_connection:
         delay: 10
         timeout: 300
 
@@ -33,4 +28,3 @@
     - name: "prepare: install python2-pip"
       raw: yum -y install python2-pip
       changed_when: false
-

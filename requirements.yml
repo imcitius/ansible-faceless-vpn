@@ -1,11 +1,11 @@
+- name: facelessvpnserver-system.role
+  src: git@jgit.me:ansible/roles/facelessvpnserver-system.role.git
+  scm: git
+
 - name: facelessvpnserver-freeradius.role
   src: git@jgit.me:ansible/roles/facelessvpnserver-freeradius.role.git
   scm: git
 
 - name: facelessvpnserver-strongswan.role
-  src: git@jgit.me:ansible/roles/facelessvpnserver-freeradius.role.git
-  scm: git
-
-- name: facelessvpnserver-system.role
-  src: git@jgit.me:ansible/roles/facelessvpnserver-freeradius.role.git
+  src: git@jgit.me:ansible/roles/facelessvpnserver-strongswan.role.git
   scm: git

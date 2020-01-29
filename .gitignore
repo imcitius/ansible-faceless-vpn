@@ -10,3 +10,4 @@ yaml_file
 group_vars/all
 inventory.json
 env
+*.txt
