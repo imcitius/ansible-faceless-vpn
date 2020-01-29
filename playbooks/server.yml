@@ -7,6 +7,7 @@
     - facelessvpnserver-system.role
     - facelessvpnserver-strongswan.role
     - facelessvpnserver-freeradius.role
+    - firewall.role
 
   pre_tasks:
     - name: Wait for server up

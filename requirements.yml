@@ -9,3 +9,7 @@
 - name: facelessvpnserver-strongswan.role
   src: git@jgit.me:ansible/roles/facelessvpnserver-strongswan.role.git
   scm: git
+
+- name: firewall.role
+  src: git@jgit.me:ansible/roles/firewall.role.git
+  scm: git
