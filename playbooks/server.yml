@@ -10,6 +10,17 @@
     - firewall.role
 
   pre_tasks:
+
+    - name: Check server is not RKN blacklisted
+      uri:
+        url: "http://ip-checker.service.{{ project }}.consul/check?ip={{ inventory_hostname }}"
+        method: GET
+        return_content: yes
+      register: this
+      failed_when: "'false' not in this.content"
+      delegate_to: localhost
+      become: false
+
     - name: Wait for server up
       wait_for_connection:
         delay: 10
