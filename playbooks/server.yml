@@ -6,9 +6,9 @@
   roles:
     - facelessvpnserver-system.role
     - facelessvpnserver-strongswan.role
-    - facelessvpnserver-freeradius.role
-    - facelessvpnserver-openvpn.role
-    - firewall.role
+    - { name: facelessvpnserver-freeradius.role, tags: ['radius'] }
+    - { name: facelessvpnserver-openvpn.role, tags: ['openvpn'] }
+    - { name: firewall.role, tags: ['firewall'] }
 
   pre_tasks:
 
@@ -29,6 +29,8 @@
 
     - name: gather facts
       setup:
+      tags:
+        - always
 
     - name: Put SELinux in permissive mode, logging actions that would be blocked.
       selinux:
