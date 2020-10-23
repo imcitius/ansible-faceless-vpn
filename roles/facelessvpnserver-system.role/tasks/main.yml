@@ -1,0 +1,29 @@
+---
+
+- name: tweak linux sysctl
+  sysctl:
+    name: "{{ item.name }}"
+    value: "{{ item.value }}"
+    sysctl_set: yes
+    state: present
+    reload: yes
+  loop:
+    - { name: net.ipv4.ip_forward, value: '1' }
+    - { name: net.ipv6.conf.default.disable_ipv6, value: '1' }
+    - { name: net.ipv6.conf.all.disable_ipv6, value: '1' }
+    - { name: net.ipv4.conf.all.accept_redirects, value: '0' }
+    - { name: net.ipv4.conf.all.send_redirects, value: '0' }
+
+- name: install utils
+  package:
+    name:
+      - mc
+      - net-tools
+      - iputils
+      - ngrep
+      - htop
+      - atop
+      - iptraf-ng
+      - nethogs
+      - lsof
+    state: present

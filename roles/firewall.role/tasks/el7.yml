@@ -1,0 +1,25 @@
+---
+- name: Install iptables
+  yum:
+    name: iptables,iptables-services
+    state: present
+
+- name: Disable firewalld
+  yum:
+    name: firewalld
+    state: absent
+
+- name: Write rules
+  template:
+    src: iptables.j2
+    dest: /etc/sysconfig/iptables
+    owner: root
+    group: root
+    mode: 0644
+  notify: restart_iptables_systemd
+
+- name: Start service
+  systemd:
+    name: iptables.service
+    state: started
+    enabled: yes

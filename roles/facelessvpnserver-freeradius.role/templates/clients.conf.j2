@@ -1,0 +1,12 @@
+client localhost {
+  ipaddr = 127.0.0.1
+  proto = *
+  secret = {{ radius_secret }}
+  require_message_authenticator = no
+  nas_type       = other
+  limit {
+   max_connections = 16
+   lifetime = 0
+   idle_timeout = 30
+  }
+}

@@ -1,0 +1,57 @@
+eap {
+  default_eap_type = md5
+  timer_expire     = 60
+  ignore_unknown_eap_types = no
+  cisco_accounting_username_bug = no
+  max_sessions = ${max_requests}
+  md5 {
+  }
+  leap {
+  }
+  gtc {
+   auth_type = PAP
+  }
+  tls-config tls-common {
+   private_key_file = ${certdir}/vault/server.key
+   certificate_file = ${certdir}/vault/server.pem
+   ca_file = ${cadir}/vault/ca.pem
+   dh_file = ${certdir}/dh
+   ca_path = ${cadir}/vault/
+   check_cert_cn = %{User-Name}
+   cipher_list = "DEFAULT"
+   cipher_server_preference = no
+   ecdh_curve = "prime256v1"
+   cache {
+        enable = no
+        lifetime = 24 # hours
+   }
+   verify {
+   }
+   ocsp {
+        enable = no
+        override_cert_url = yes
+        url = "http://127.0.0.1/ocsp/"
+   }
+  }
+  tls {
+   tls = tls-common
+   virtual_server = check-eap-tls
+  }
+  ttls {
+   tls = tls-common
+   default_eap_type = md5
+   copy_request_to_tunnel = no
+   use_tunneled_reply = no
+   virtual_server = "inner-tunnel"
+   require_client_cert = yes
+  }
+  peap {
+   tls = tls-common
+   default_eap_type = mschapv2
+   copy_request_to_tunnel = no
+   use_tunneled_reply = no
+   virtual_server = "inner-tunnel"
+  }
+  mschapv2 {
+  }
+} 

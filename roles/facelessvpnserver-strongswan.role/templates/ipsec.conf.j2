@@ -1,0 +1,36 @@
+config setup
+    charondebug="ike 2, knl 2, cfg 2, net 2, esp 2, dmn 2,  mgr 2, tls 2"
+
+conn %default
+    keyexchange=ikev2
+    ike=aes128-sha256-ecp256,aes256-sha384-ecp384,aes128-sha256-modp2048,aes128-sha1-modp2048,aes256-sha384-modp4096,aes256-sha256-modp4096,aes256-sha1-modp4096,aes128-sha256-modp1536,aes128-sha1-modp1536,aes256-sha384-modp2048,aes256-sha256-modp2048,aes256-sha1-modp2048,aes128-sha256-modp1024,aes128-sha1-modp1024,aes256-sha384-modp1536,aes256-sha256-modp1536,aes256-sha1-modp1536,aes256-sha384-modp1024,aes256-sha256-modp1024,aes256-sha1-modp1024!
+    esp=aes128gcm16-ecp256,aes256gcm16-ecp384,aes128-sha256-ecp256,aes256-sha384-ecp384,aes128-sha256-modp2048,aes128-sha1-modp2048,aes256-sha384-modp4096,aes256-sha256-modp4096,aes256-sha1-modp4096,aes128-sha256-modp1536,aes128-sha1-modp1536,aes256-sha384-modp2048,aes256-sha256-modp2048,aes256-sha1-modp2048,aes128-sha256-modp1024,aes128-sha1-modp1024,aes256-sha384-modp1536,aes256-sha256-modp1536,aes256-sha1-modp1536,aes256-sha384-modp1024,aes256-sha256-modp1024,aes256-sha1-modp1024,aes128gcm16,aes256gcm16,aes128-sha256,aes128-sha1,aes256-sha384,aes256-sha256,aes256-sha1!
+    dpdaction=clear
+    dpddelay=300s
+    rekey=no
+    left=%any
+    leftid=@{{ vpn_server_uri }}
+    leftsubnet=0.0.0.0/0
+    leftcert={{ server_cert_name }}.der
+    right=%any
+    rightid=%any
+    rightdns=8.8.8.8,8.8.4.4
+    rightsourceip={{ client_ip_subnet }}
+
+conn IPSec-IKEv2-EAP
+    keyexchange=ikev2
+    leftauth=pubkey
+    rightauth=eap-radius
+    rightsendcert=always
+    eap_identity=%identity
+    auto=add
+
+conn IPSec-IKEv2-IOS-EAP
+    leftid={{ vpn_server_uri }}
+    keyexchange=ikev2
+    leftauth=pubkey
+    rightauth=eap-radius
+    rightsendcert=always
+    leftsendcert=always
+    eap_identity=%identity
+    auto=add 

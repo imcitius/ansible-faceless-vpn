@@ -1,0 +1,6 @@
+---
+- name: restart radiusd.service
+  service:
+    name: radiusd.service
+    state: restarted
+

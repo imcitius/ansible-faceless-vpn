@@ -1,0 +1,17 @@
+- name: Install epel-release and pip packages
+  yum:
+    name:
+      - epel-release
+      - python2-pip
+    state: present
+
+- name: Install strongswan packages
+  yum:
+    name:
+      - strongswan.x86_64
+    state: present
+
+- name: Ensure python OpenSSL dependencies are installed.
+  pip:
+    name: pyOpenSSL>=0.6
+    state: present

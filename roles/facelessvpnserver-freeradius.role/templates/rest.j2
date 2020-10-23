@@ -1,0 +1,29 @@
+rest {
+  tls {
+	check_cert = no
+        check_cert_cn = no
+  }
+  connect_uri = "{{ api_server }}"
+  authorize {
+                uri = "https://{{ api_server }}/internal/check-hash?t={{ api_token }}"
+                method = 'post'
+                body = 'json'
+                        data = '{"data": "%{User-Name}"}'
+  }
+  accounting {
+                uri = "https://{{ api_server }}/internal/acct?t={{ api_token }}"
+                method = 'post'
+                body = 'json'
+                data = '{"User": "%{User-Name}", "Acct-Status-Type": "%{Acct-Status-Type}", "Acct-Session-Id": "%{Acct-Session-Id}", "Event-Timestamp": "%{Event-Timestamp}", "Calling-Station-Id": "%{Calling-Station-Id}", "Framed-IP-Address": "%{Framed-IP-Address}", "NAS-IP-Address": "%{NAS-IP-Address}", "Acct-Output-Octets": "%{Acct-Output-Octets}", "Acct-Input-Packets": "%{Acct-Input-Packets}", "Acct-Terminate-Cause": "%{Acct-Terminate-Cause}"}'
+  }
+  pool {
+   start = ${thread[pool].start_servers}
+   min = ${thread[pool].min_spare_servers}
+   max = ${thread[pool].max_servers}
+   spare = ${thread[pool].max_spare_servers}
+   uses = 0
+   retry_delay = 30
+   lifetime = 0
+   idle_timeout = 60
+  }
+} 

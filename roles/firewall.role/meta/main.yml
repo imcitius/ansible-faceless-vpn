@@ -1,0 +1,17 @@
+galaxy_info:
+  role_name: iptables
+  author: youyo
+  company: heptagon inc.
+  description: Setup iptables
+  license: MIT
+  min_ansible_version: 2.4
+  platforms:
+    - name: EL
+      versions:
+        - 7
+        - 6
+
+  galaxy_tags:
+    - system
+
+dependencies: []

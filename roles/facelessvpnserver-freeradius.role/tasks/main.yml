@@ -1,0 +1,138 @@
+---
+- name: Adding RPM key for LDAP Toolbox Project
+  rpm_key:
+    state: present
+    key: https://ltb-project.org/lib/RPM-GPG-KEY-LTB-project
+
+- name: Template a file to /etc/yum.repos.d/ltb-project.repo
+  template:
+    src: ltb-project.repo.j2
+    dest: /etc/yum.repos.d/ltb-project.repo
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: import keys
+  shell: gpg --keyserver keys.gnupg.net --recv-key 0x41382202
+  register: result
+  until: result.rc == 0
+  retries: 5
+  delay: 3
+
+- name: import keys
+  shell: gpg --armor --export packages@networkradius.com > /etc/pki/rpm-gpg/packages.networkradius.com.gpg
+  register: result
+  until: result.rc == 0
+  retries: 5
+  delay: 3
+
+- name: Template a file to /etc/yum.repos.d/networkradius.repo
+  template:
+    src: networkradius.repo.j2
+    dest: /etc/yum.repos.d/networkradius.repo
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Install freeradius and openssl packages
+  yum:
+    name:
+      - freeradius
+      - freeradius-utils
+      - freeradius-rest
+      - freeradius-config
+      - openssl
+    state: present
+
+- name: Template a file to /etc/raddb/clients.conf
+  template:
+    src: clients.conf.j2
+    dest: /etc/raddb/clients.conf
+    owner: root
+    group: radiusd
+    mode: '0644' 
+
+- name: Template a file to /etc/raddb/radiusd.conf
+  template:
+    src: radiusd.conf.j2
+    dest: /etc/raddb/radiusd.conf
+    owner: root
+    group: radiusd
+    mode: '0644' 
+
+- name: Template a file to /etc/raddb/mods-available/rest
+  template:
+    src: rest.j2
+    dest: /etc/raddb/mods-available/rest
+    owner: root
+    group: radiusd
+    mode: '0644'
+
+- name: Create a symbolic link to /etc/raddb/mods-available/rest
+  file:
+    src: /etc/raddb/mods-available/rest
+    dest: /etc/raddb/mods-enabled/rest
+    owner: root
+    group: radiusd
+    state: link
+
+- name: Template a file to /etc/raddb/mods-available/eap
+  template:
+    src: eap.j2
+    dest: /etc/raddb/mods-available/eap
+    owner: root
+    group: radiusd
+    mode: '0644'
+
+- name: Template a file to /etc/raddb/sites-available/default
+  template:
+    src: default.j2
+    dest: /etc/raddb/sites-available/default
+    owner: root
+    group: radiusd
+    mode: '0644'
+
+- name: Create a symbolic link to /etc/raddb/sites-available/check-eap-tls
+  file:
+    src:  /etc/raddb/sites-available/check-eap-tls
+    dest:  /etc/raddb/sites-enabled/check-eap-tls
+    owner: root
+    group: radiusd
+    state: link
+
+- name: Create a directory /etc/raddb/certs/vault if it does not exist
+  file:
+    path: /etc/raddb/certs/vault
+    state: directory
+    owner: root
+    group: radiusd
+    mode: '0755'
+
+- name: Copy pki_int_ca.pem to freeradius config directory
+  copy:
+    src: /etc/strongswan/ipsec.d/cacerts/pki_int_ca.pem
+    dest: /etc/raddb/certs/vault/ca.pem
+    remote_src: yes
+    mode: '0644'
+
+- name: Copy server RSA key to freeradius config directory
+  copy:
+    src: "/etc/strongswan/ipsec.d/private/{{ server_cert_name }}.key"
+    dest: /etc/raddb/certs/vault/server.key
+    remote_src: yes
+    mode: '0644'
+
+- name: Copy server certificate to freeradius config directory
+  copy:
+    src: "/etc/strongswan/ipsec.d/certs/{{ server_cert_name }}.pem"
+    dest: /etc/raddb/certs/vault/server.pem
+    remote_src: yes
+    mode: '0644'
+  notify:
+    - restart radiusd.service
+
+- name: enable a radiusd.service
+  systemd:
+    name: radiusd.service
+    state: started
+    enabled: yes

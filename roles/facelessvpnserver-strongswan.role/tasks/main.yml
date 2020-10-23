@@ -1,0 +1,68 @@
+---
+
+- name: prepare server
+  include_tasks: install.yml
+
+#- name: check if server bootstrapped
+#  stat:
+#    path: "/etc/strongswan/ipsec.d/private/{{ server_cert_name }}.pem"
+#  register: server_private_key
+
+- name: boostrap certificates
+  include_tasks: certs.yml
+#  when: not server_private_key.stat.exists
+
+- name: Template a file to /etc/strongswan/ipsec.secrets
+  template:
+    src: ipsec.secrets.j2
+    dest: /etc/strongswan/ipsec.secrets
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Template a file to /etc/strongswan/strongswan.conf
+  template:
+    src: strongswan.conf.j2
+    dest: /etc/strongswan/strongswan.conf
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Template a file to /etc/strongswan/strongswan.d/charon/dhcp.conf
+  template:
+    src: dhcp.conf.j2
+    dest: /etc/strongswan/strongswan.d/charon/dhcp.conf
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Template a file to /etc/strongswan/ipsec.conf
+  template:
+    src: ipsec.conf.j2
+    dest: /etc/strongswan/ipsec.conf
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Template a file to /etc/strongswan/strongswan.d/charon/eap-radius.conf
+  template:
+    src: eap-radius.conf.j2
+    dest: /etc/strongswan/strongswan.d/charon/eap-radius.conf
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Template a file to /etc/strongswan/strongswan.d/charon/eap-tls.conf
+  template:
+    src: eap-tls.conf.j2
+    dest: /etc/strongswan/strongswan.d/charon/eap-tls.conf
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: enable a strongswan
+  systemd:
+    name: strongswan
+    state: started
+    enabled: yes
+

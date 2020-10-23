@@ -1,0 +1,129 @@
+- name: generate temporary directory
+  tempfile:
+    state: directory
+  register: certs_dir
+  delegate_to: localhost
+  become: false
+
+- name: Download pki_int ca certificate
+  get_url:
+    url: "{{ vault_address }}/v1/pki_int/ca/pem"
+    dest: "{{ certs_dir.path }}/pki_int_ca.pem"
+    mode: '0440'
+  delegate_to: localhost
+  become: false
+
+- name: Download ROOT ca certificate
+  get_url:
+    url: "{{ vault_address }}/v1/pki/ca/pem"
+    dest: "{{ certs_dir.path }}/pki_ca.pem"
+    mode: '0440'
+  delegate_to: localhost
+  become: false
+
+- name: Copy pki_int ca certificate
+  copy:
+    src: "{{ certs_dir.path }}/pki_int_ca.pem"
+    dest: /etc/strongswan/ipsec.d/cacerts/pki_int_ca.pem
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Copy ROOT ca certificate
+  copy:
+    src: "{{ certs_dir.path }}/pki_ca.pem"
+    dest: /etc/strongswan/ipsec.d/cacerts/pki_ca.pem
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Insert end of line to last line pki_int_ca.pem
+  lineinfile:
+    path: /etc/strongswan/ipsec.d/cacerts/pki_int_ca.pem
+    state: present
+    regexp: '(END CERTIFICATE)'
+    backrefs: yes
+    line: '-----END CERTIFICATE-----'
+
+- name: Insert end of line to last line pki_ca.pem
+  lineinfile:
+    path: /etc/strongswan/ipsec.d/cacerts/pki_ca.pem
+    state: present
+    regexp: '(END CERTIFICATE)'
+    backrefs: yes
+    line: '-----END CERTIFICATE-----'
+
+
+
+
+
+- name: Check if local private key is present
+  stat:
+    path: "/etc/strongswan/ipsec.d/private/{{ server_cert_name }}.der"
+  register: local_key
+
+- name: Generate an OpenSSL private key with a size 2048 bits
+  openssl_privatekey:
+    path: "/etc/strongswan/ipsec.d/private/{{ server_cert_name }}.key"
+    size: 2048
+  when: not local_key.stat.exists
+
+- name: Convert server RSA key from PEM format to DER format
+  shell: "openssl rsa -inform PEM -outform DER -in /etc/strongswan/ipsec.d/private/{{ server_cert_name }}.key -out /etc/strongswan/ipsec.d/private/{{ server_cert_name }}.der"
+  when: not local_key.stat.exists
+
+- name: Check if local cert is already present
+  stat:
+    path: "/etc/strongswan/ipsec.d/certs/{{ server_cert_name }}.der"
+  register: local_cert
+
+- name: Create Certificate Signing Request
+  openssl_csr:
+    path: /etc/strongswan/ipsec.d/reqs/server.csr
+    privatekey_path: "/etc/strongswan/ipsec.d/private/{{ server_cert_name }}.key"
+    common_name: "{{ vpn_server_identifier }}"
+    subject_alt_name: "DNS:{{ ike_domain_prefix }}.{{ global_domain_prefix }},DNS:{{ aws_region }}.{{ ike_domain_prefix }}.{{ global_domain_prefix }},DNS:{{ id }}.{{ aws_region }}.{{ global_domain_prefix }}"
+  when: not local_cert.stat.exists
+
+- name: Fetch CSR file to local host
+  fetch:
+    src: /etc/strongswan/ipsec.d/reqs/server.csr
+    dest: "{{ certs_dir.path }}/server.csr"
+    flat: yes
+  when: not local_cert.stat.exists
+
+- name: get cert from vault
+  uri:
+    url: "{{ vault_address }}/v1/pki_int/sign/faceless"
+    method: POST
+    body_format: json
+    body:
+      'csr': "{{ lookup('file', certs_dir.path + '/server.csr') }}"
+      'common_name': "{{ vpn_server_identifier }}"
+      'ttl': '86400000'
+    headers:
+      'X-Vault-Token': "{{ vault_token }}"
+  register: _result
+  delegate_to: localhost
+  become: false
+  when: not local_cert.stat.exists
+
+- name: Copy host certificate
+  copy:
+    content: "{{ _result.json.data.certificate }}"
+    dest: "/etc/strongswan/ipsec.d/certs/{{ server_cert_name }}.pem"
+  when: not local_cert.stat.exists
+
+- name: Convert host certificate from PEM format to DER format
+  shell: "{{ item }}"
+  with_items:
+    - "openssl x509 -inform PEM -outform DER -text -in /etc/strongswan/ipsec.d/certs/{{ server_cert_name }}.pem -out /etc/strongswan/ipsec.d/certs/{{ server_cert_name }}.der"
+  notify: restart strongswan
+  when: not local_cert.stat.exists
+
+- name: drop temp dir
+  file:
+    path: "{{ certs_dir.path }}"
+    state: absent
+  delegate_to: localhost
+  become: false

@@ -1,0 +1,20 @@
+---
+- name: Install iptables
+  yum:
+    name: iptables
+    state: present
+
+- name: Write rules
+  template:
+    src: iptables.j2
+    dest: /etc/sysconfig/iptables
+    owner: root
+    group: root
+    mode: 0644
+  notify: restart_iptables_service
+
+- name: Start service
+  service:
+    name: iptables
+    state: started
+    enabled: yes

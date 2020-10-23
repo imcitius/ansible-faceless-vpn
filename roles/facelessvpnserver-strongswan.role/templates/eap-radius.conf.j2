@@ -1,0 +1,22 @@
+eap-radius {
+    accounting = yes
+    accounting_close_on_timeout = yes
+    accounting_interval = 300
+    close_all_on_timeout = yes
+    eap_start = no
+    load = yes
+    nas_identifier = {{ vpn_server_ip }}
+    port = 1812
+    retransmit_tries = 4
+    secret = {{ radius_secret }}
+    server = 127.0.0.1
+    station_id_with_port = no
+    dae {
+    }
+    forward {
+    }
+    servers {
+    }
+    xauth {
+    }
+}
